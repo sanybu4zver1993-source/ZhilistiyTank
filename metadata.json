@@ -1,0 +1,6 @@
+{
+  "name": "Жилистый Танк",
+  "description": "Биосистема v2.1. 100% Offline PWA Android-контейнер",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
