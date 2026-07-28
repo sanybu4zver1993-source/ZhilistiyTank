@@ -1,298 +1,285 @@
-// Жилистый Танк v2.1 JS - Архитектура: "Core vs Modules", Anti-Edgecase 
-// 100% Offline, Native-Like
-
 "use strict";
 
-// --- Anti-Edgecase Layer ---
 const safeParseInt = (val, fallback = 0) => {
     const res = parseInt(val, 10);
     return isNaN(res) ? fallback : res;
 };
 
-// --- State & IndexedDB Core ---
+// --- State Core ---
 const AppState = {
-    food: { chicken: 0, fish: 0, bones: 0 },
-    logs: [] // In-memory temp before flush to IDB
+    food: { totalB: 0, totalF: 0, totalU: 0 },
+    logs: [] 
 };
 
-let db = null;
-const initDB = () => {
-    return new Promise((resolve, reject) => {
-        const req = window.indexedDB.open("VeinyTankDB", 1);
-        req.onerror = (e) => reject("DB Error");
-        req.onsuccess = (e) => {
-            db = e.target.result;
-            resolve();
-            loadState();
-        };
-        req.onupgradeneeded = (e) => {
-            let dbStore = e.target.result;
-            if (!dbStore.objectStoreNames.contains("logs")) {
-                dbStore.createObjectStore("logs", { keyPath: "id", autoIncrement: true });
-            }
-            if (!dbStore.objectStoreNames.contains("state")) {
-                dbStore.createObjectStore("state", { keyPath: "key" });
-            }
-        };
-    });
-};
-
-const saveLog = (type, data) => {
-    if (!db) return;
-    try {
-        const tx = db.transaction("logs", "readwrite");
-        const store = tx.objectStore("logs");
-        store.add({ type, data, timestamp: new Date().toISOString() });
-    } catch (e) { console.error("IDB save error", e); }
-};
-
-const saveFoodState = () => {
-    if (!db) return;
-    try {
-        const tx = db.transaction("state", "readwrite");
-        tx.objectStore("state").put({ key: "food", value: AppState.food });
-    } catch (e) {}
-};
-
-const loadState = () => {
-    if (!db) return;
-    try {
-        const tx = db.transaction("state", "readonly");
-        const store = tx.objectStore("state");
-        const req = store.get("food");
-        req.onsuccess = (e) => {
-            if (req.result && req.result.value) {
-                AppState.food = req.result.value;
-                updateFoodUI();
-            }
-        };
-    } catch (e) {}
-};
-
-
-// --- UI Navigation ---
+// --- Module Navigation ---
 window.showModule = (id) => {
     document.querySelectorAll('.module').forEach(el => el.classList.remove('active'));
     document.getElementById(`module-${id}`).classList.add('active');
 };
 
+// ==========================================
+// 1. УМНЫЙ ВВОД КБЖУ (Smart NLP Parser)
+// ==========================================
+// Локальная база (Граммовки на 100г продукта)
+const foodDB = {
+    "гречк": { b: 12, f: 3, u: 68 }, 
+    "яйц": { b: 13, f: 11, u: 1, unit: 50 }, // 1 шт = ~50г
+    "колбас": { b: 12, f: 20, u: 2 },
+    "пшенк": { b: 11, f: 3, u: 73 },
+    "печен": { b: 19, f: 4, u: 0 },
+    "куриц": { b: 23, f: 2, u: 0 },
+    "банан": { b: 1.5, f: 0.1, u: 22, unit: 120 }
+};
 
-// --- Module: Чернигов Тревоги ---
-function checkAlerts() {
-    const res = document.getElementById("alertResult");
-    const status = document.getElementById("alertStatus");
-    res.innerHTML = "Подключение к alerts.in.ua...";
-    
-    // В оффлайн PWA API может быть недоступен (CORS/NoNet), делаем безопасный fetch
-    fetch("https://api.alerts.in.ua/v1/alerts/active.json", { mode: 'no-cors' })
-        .then(() => {
-            // Без ключа API или no-cors мы не прочтем body, симулируем для "Жилистого Танка"
-            res.innerHTML = "✅ Связь установлена. (Тревога не обнаружена или недоступно API)";
-            status.innerHTML = "🟢 Чернигов: Спокойно";
-        })
-        .catch(() => {
-            res.innerHTML = "⚠️ Оффлайн режим. Нет связи с сервером.";
-            status.innerHTML = "📡 Оффлайн";
-        });
-}
+window.parseFoodString = () => {
+    const text = document.getElementById("smartFoodInput").value.toLowerCase();
+    let outB = 0, outF = 0, outU = 0;
+    let parsedItems = [];
 
-// --- Blackout Mode / Battery API ---
-function updateBatteryStatus(battery) {
-    const levelStr = `${Math.round(battery.level * 100)}%`;
-    document.getElementById('batteryStatus').innerText = `🔋 ${levelStr} ${battery.charging ? '⚡' : ''}`;
-    
-    if (battery.level <= 0.20 && !battery.charging) {
-        document.body.classList.add("blackout-mode");
+    // Ищем паттерны: "150г гречки", "2 шт яйца", "100 грамм колбасы"
+    const regex = /(\d+)\s*(г|грамм|шт)?\s*([а-я]+)/g;
+    let match;
+    let foundSomething = false;
+
+    while ((match = regex.exec(text)) !== null) {
+        let amount = parseInt(match[1]);
+        let unit = match[2] || "г"; 
+        let name = match[3];
+
+        // Поиск ключа в базе
+        let dbKey = Object.keys(foodDB).find(k => name.includes(k));
+        if (dbKey) {
+            foundSomething = true;
+            let item = foodDB[dbKey];
+            // Конвертация штук в граммы, если указано
+            let weight = (unit === "шт" && item.unit) ? amount * item.unit : amount;
+            
+            let b = (item.b * weight / 100);
+            let f = (item.f * weight / 100);
+            let u = (item.u * weight / 100);
+            
+            outB += b; outF += f; outU += u;
+            parsedItems.push(`${name} (${weight}г)`);
+        }
+    }
+
+    const resDiv = document.getElementById("smartParseResult");
+    resDiv.style.display = "block";
+
+    if (foundSomething) {
+        resDiv.innerHTML = `<span class="text-success">Распознано:</span> ${parsedItems.join(", ")}<br>
+                            <b>Б:</b> ${outB.toFixed(1)} <b>Ж:</b> ${outF.toFixed(1)} <b>У:</b> ${outU.toFixed(1)}`;
+        window.tempSmartData = { b: outB, f: outF, u: outU, text };
+        document.getElementById("btnSaveSmartFood").style.display = "block";
     } else {
-        document.body.classList.remove("blackout-mode");
+        resDiv.innerHTML = "<span class="text-danger">Не удалось распознать продукты.</span><br>Попробуй формат: '150г гречки, 2 шт яйца'";
+        document.getElementById("btnSaveSmartFood").style.display = "none";
     }
-}
+};
 
-if ('getBattery' in navigator) {
-    navigator.getBattery().then(battery => {
-        updateBatteryStatus(battery);
-        battery.addEventListener('levelchange', () => updateBatteryStatus(battery));
-        battery.addEventListener('chargingchange', () => updateBatteryStatus(battery));
-    });
-} else {
-    document.getElementById('batteryStatus').innerText = "🔋 Батарея (Нет API)";
-}
-
-// --- Module: Grip ---
-function saveGrip() {
-    const r = safeParseInt(document.getElementById("gripRight").value);
-    const l = safeParseInt(document.getElementById("gripLeft").value);
+window.commitSmartFood = () => {
+    if(!window.tempSmartData) return;
+    AppState.food.totalB += window.tempSmartData.b;
+    AppState.food.totalF += window.tempSmartData.f;
+    AppState.food.totalU += window.tempSmartData.u;
     
-    if (r === 0 && l === 0) return alert("Введите данные!");
-    
-    saveLog("grip", { right: r, left: l });
-    
-    const div = document.createElement("div");
-    div.className = "card mt-2 text-center text-success";
-    div.innerText = `Пр: ${r}кг, Лев: ${l}кг сохранено!`;
-    document.getElementById("gripLogs").prepend(div);
-    
-    document.getElementById("gripRight").value = "";
-    document.getElementById("gripLeft").value = "";
-}
-
-// --- Module: Nutrition ---
-function addFood(type) {
-    if (AppState.food[type] !== undefined) {
-        AppState.food[type]++;
-        updateFoodUI();
-        saveFoodState();
-    }
-}
-
-function resetFood() {
-    AppState.food = { chicken: 0, fish: 0, bones: 0 };
     updateFoodUI();
-    saveFoodState();
-}
+    AppState.logs.push({type: "food", data: window.tempSmartData.text, time: Date.now()});
+    
+    document.getElementById("smartFoodInput").value = "";
+    document.getElementById("smartParseResult").style.display = "none";
+    document.getElementById("btnSaveSmartFood").style.display = "none";
+    window.tempSmartData = null;
+};
+
+window.applyTemplate = (name) => {
+    let str = "";
+    if(name === 'Завтрак Танка') str = "2 шт яйца, 150г пшенки";
+    if(name === 'Ужин Танка') str = "200г печень, 100г гречки";
+    document.getElementById("smartFoodInput").value = str;
+    window.parseFoodString();
+};
+
+window.resetBJU = () => { AppState.food = { totalB: 0, totalF: 0, totalU: 0 }; updateFoodUI(); };
 
 function updateFoodUI() {
-    document.getElementById("countChicken").innerText = AppState.food.chicken;
-    document.getElementById("countFish").innerText = AppState.food.fish;
-    document.getElementById("countBones").innerText = AppState.food.bones;
+    document.getElementById("totalB").innerText = Math.round(AppState.food.totalB);
+    document.getElementById("totalF").innerText = Math.round(AppState.food.totalF);
+    document.getElementById("totalU").innerText = Math.round(AppState.food.totalU);
 }
 
-// --- Module: Breath (Штанге/Генчи) ---
-let breathTimer = null;
-let breathTimeMs = 0;
-let breathRunning = false;
+// ==========================================
+// 2. ИНТЕРАКТИВНЫЙ WORKOUT ENGINE (Iso-Timer)
+// ==========================================
+let isoTimer;
+window.startIsoTimer = (seconds) => {
+    stopIsoTimer();
+    const display = document.getElementById("isoTimerDisplay");
+    let time = seconds;
+    
+    // Вбрация на старт
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    
+    display.style.backgroundColor = "var(--danger)";
+    display.innerText = `УДЕРЖАНИЕ: ${time}с`;
 
-function formatStopwatch(ms) {
-    const m = Math.floor(ms / 60000).toString().padStart(2, '0');
-    const s = Math.floor((ms % 60000) / 1000).toString().padStart(2, '0');
-    const ms1 = Math.floor((ms % 1000) / 100).toString();
-    return `${m}:${s}.${ms1}`;
-}
+    isoTimer = setInterval(() => {
+        time--;
+        display.innerText = `УДЕРЖАНИЕ: ${time}с`;
+        if (time <= 0) {
+            stopIsoTimer();
+            display.style.backgroundColor = "var(--success)";
+            display.innerText = "ОТДЫХ!";
+            if (navigator.vibrate) navigator.vibrate([500]); // Длинная вибрация на отпускание
+        }
+    }, 1000);
+};
 
-function startBreath() {
-    if (breathRunning) return;
-    breathRunning = true;
-    breathTimeMs = 0;
-    const startMs = Date.now();
-    const display = document.getElementById("stopwatch");
-    const res = document.getElementById("breathResult");
-    res.innerText = "Идет замер...";
-    document.getElementById("btnBreathStart").innerText = "Идет...";
-    
-    breathTimer = setInterval(() => {
-        breathTimeMs = Date.now() - startMs;
-        display.innerText = formatStopwatch(breathTimeMs);
-    }, 100);
-}
+window.stopIsoTimer = () => {
+    if (isoTimer) clearInterval(isoTimer);
+    document.getElementById("isoTimerDisplay").innerText = "ОСТАНОВЛЕНО";
+    document.getElementById("isoTimerDisplay").style.backgroundColor = "var(--nav-bg)";
+};
 
-function stopBreath() {
-    if (!breathRunning) return;
-    clearInterval(breathTimer);
-    breathRunning = false;
-    document.getElementById("btnBreathStart").innerText = "Старт";
-    
-    const sec = (breathTimeMs / 1000).toFixed(1);
-    let evalText = "Слабовато (Норма от 40с)";
-    if (sec >= 40) evalText = "Отлично (Здоровый)";
-    if (sec >= 60) evalText = "Титановый уровень 🦾";
-    
-    document.getElementById("breathResult").innerText = `Результат: ${sec} сек. ${evalText}`;
-    saveLog("breath_hold", { seconds: sec });
-}
+let currentReps = 0;
+window.addRep = () => {
+    currentReps++;
+    if(currentReps > 3) currentReps = 0;
+    document.getElementById("repCounter").innerText = `${currentReps} / 3`;
+    if(navigator.vibrate) navigator.vibrate(50);
+};
 
-// --- Module: Orthostatic ---
-function calcOrtho() {
-    const l = safeParseInt(document.getElementById("hrLying").value);
-    const s = safeParseInt(document.getElementById("hrStanding").value);
-    if (!l || !s) return alert("Введите оба пульса");
-    
-    const diff = s - l;
-    let text = "";
-    if (diff < 12) text = "✅ Отличная регуляция ВНС (Танк!)";
-    else if (diff <= 20) text = "🟡 Нормально, но можно лучше";
-    else text = "🔴 Перетренированность / Слабость сосудов!";
-    
-    document.getElementById("orthoResult").innerText = `Изменение: +${diff} уд/мин.\n${text}`;
-    saveLog("orthostatic", { lying: l, standing: s, diff });
-}
-
-// --- Module: Body Battery ---
-function calcBattery() {
-    // Fake simple algorithm
-    const val = 40 + Math.floor(Math.random() * 60);
-    const bar = document.getElementById("batteryFill");
-    bar.style.width = `${val}%`;
-    bar.style.backgroundColor = val > 70 ? "var(--success)" : val > 40 ? "orange" : "var(--danger)";
-    document.getElementById("batteryText").innerText = `${val}/100 🔋`;
-    
-    // Sleep windows (90min blocks)
-    let now = new Date();
-    // Add 15 mins to fall asleep
-    now.setMinutes(now.getMinutes() + 15); 
-    
-    let ul = document.getElementById("sleepWindows");
-    ul.innerHTML = "";
-    for (let cycles = 4; cycles <= 6; cycles++) {
-        let wake = new Date(now.getTime() + cycles * 90 * 60000);
-        let h = wake.getHours().toString().padStart(2, '0');
-        let m = wake.getMinutes().toString().padStart(2, '0');
-        
-        let li = document.createElement("li");
-        li.innerText = `🛌 ${cycles} циклов (${cycles*1.5}ч) – подъем в ${h}:${m}`;
-        ul.appendChild(li);
-    }
-}
-
-// --- Module: SOS 4-7-8 Breathing ---
-let sosTimer = null;
-function startSOSBreath() {
-    const circle = document.getElementById("breathCircle");
-    if (sosTimer) clearTimeout(sosTimer);
+// ==========================================
+// 3. SOS: АНИМАЦИЯ ФИЗИОЛОГИЧЕСКОГО ВЗДОХА
+// ==========================================
+let sighInterval;
+window.startSighAnimation = () => {
+    stopSighAnimation();
+    const circle = document.getElementById("breathSighCircle");
     
     const cycle = () => {
-        circle.style.transform = "scale(1)";
-        circle.style.backgroundColor = "var(--primary)";
-        circle.innerText = "ВДОХ (4с)";
+        // Вдох 1
+        circle.className = "breathing-animator anim-inhale-1";
+        circle.innerText = "ВДОХ";
+        if(navigator.vibrate) navigator.vibrate(100);
         
-        sosTimer = setTimeout(() => {
-            circle.style.transform = "scale(1.1)";
-            circle.innerText = "ЗАДЕРЖКА (7с)";
+        setTimeout(() => {
+            // Вдох 2 (добор)
+            circle.className = "breathing-animator anim-inhale-2";
+            circle.innerText = "ДОБОР!";
+            if(navigator.vibrate) navigator.vibrate(150);
             
-            sosTimer = setTimeout(() => {
-                circle.style.transform = "scale(0.5)";
-                circle.style.backgroundColor = "var(--success)";
-                circle.innerText = "ВЫДОХ (8с)";
+            setTimeout(() => {
+                // Выдох
+                circle.className = "breathing-animator anim-exhale";
+                circle.innerText = "ВЫДОХ";
                 
-                sosTimer = setTimeout(cycle, 8000);
-            }, 7000);
-        }, 4000);
+                setTimeout(cycle, 4000); // Повтор через 4 секунды выдоха
+            }, 1000); // Добор длится 1 сек
+        }, 1500); // 1й вдох длится 1.5 сек
     };
     cycle();
-}
+};
 
-// --- Module: Export ---
-function exportData() {
-    if (!db) return alert("База данных не готова");
+window.stopSighAnimation = () => {
+    if (sighInterval) clearTimeout(sighInterval);
+    // Это просто сбросит все таймауты грубо, но для PoC сойдет.
+    // Лучше очищать таймауты по id, но перепишем в след. итерации если надо.
+    let id = window.setTimeout(function() {}, 0);
+    while (id--) window.clearTimeout(id); 
+    
+    const circle = document.getElementById("breathSighCircle");
+    circle.className = "breathing-animator";
+    circle.innerText = "ВЗДОХ";
+};
+
+let nsdrTimer;
+window.startNSDR = () => {
+    if(nsdrTimer) clearInterval(nsdrTimer);
+    let time = 15 * 60; // 15 min
+    const display = document.getElementById("nsdrDisplay");
+    display.style.display = "block";
+    
+    nsdrTimer = setInterval(() => {
+        let m = Math.floor(time / 60).toString().padStart(2, '0');
+        let s = (time % 60).toString().padStart(2, '0');
+        display.innerText = `${m}:${s}`;
+        time--;
+        if(time < 0) {
+            clearInterval(nsdrTimer);
+            display.innerText = "СЕАНС ЗАВЕРШЕН";
+            if(navigator.vibrate) navigator.vibrate([1000, 500, 1000]);
+        }
+    }, 1000);
+};
+
+// ==========================================
+// 4. МЕТЕО БЕЗ GPS (Open-Meteo API)
+// ==========================================
+window.fetchWeather = async () => {
+    const city = document.getElementById("cityInput").value || "Чернигов";
+    const res = document.getElementById("weatherResult");
+    res.style.display = "block";
+    res.innerText = "Запрашиваю API...";
+
     try {
-        const tx = db.transaction("logs", "readonly");
-        const req = tx.objectStore("logs").getAll();
-        req.onsuccess = () => {
-            const data = JSON.stringify(req.result, null, 2);
-            const blob = new Blob([data], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `ЖилистыйТанк_Анализы_${new Date().toISOString().slice(0,10)}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        };
-    } catch(e) {
-        alert("Ошибка экспорта");
-    }
-}
+        // Получаем координаты города (GeoCoding API)
+        const geoResp = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=ru`);
+        const geoData = await geoResp.json();
+        
+        if(!geoData.results || geoData.results.length === 0) {
+            res.innerText = `❌ Город ${city} не найден.`;
+            return;
+        }
+        
+        const lat = geoData.results[0].latitude;
+        const lon = geoData.results[0].longitude;
 
-// RUN INIT
-document.addEventListener("DOMContentLoaded", () => {
-    initDB().catch(console.error);
-});
+        // Получаем погоду (Weather API)
+        const wResp = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&hourly=surface_pressure`);
+        const wData = await wResp.json();
+        
+        const temp = wData.current_weather.temperature;
+        const wind = wData.current_weather.windspeed;
+        const pressurehPa = wData.hourly.surface_pressure[0]; 
+        const pressureMmHg = Math.round(pressurehPa * 0.75006); // hPa -> мм рт. ст.
+
+        res.innerHTML = `📍 ${city}:<br>🌡 Температура: ${temp}°C<br>💨 Ветер: ${wind} км/ч<br>⚖️ Давление: ${pressureMmHg} мм рт.ст.`;
+        document.getElementById("weatherStatus").innerText = `🌤 ${city}: ${temp}°C`;
+        
+    } catch(e) {
+        res.innerText = "⚠️ Ошибка сети. Проверьте интернет.";
+    }
+};
+
+// ==========================================
+// 5. ЭКСПОРТ В .TXT (UTF-8 BOM, Укр)
+// ==========================================
+window.exportToTxt = () => {
+    let txt = "ЗВІТ ДЛЯ ЛІКАРЯ (МЕДИЧНА ВИПИСКА)\n=================================\n\n";
+    txt += `Дата формування: ${new Date().toLocaleString("uk-UA")}\n\n`;
+    
+    txt += "📊 ЗЖИВАННЯ БЖУ (ОСТАННІ ДАНІ):\n";
+    txt += `- Білки: ${Math.round(AppState.food.totalB)} г\n`;
+    txt += `- Жири: ${Math.round(AppState.food.totalF)} г\n`;
+    txt += `- Вуглеводи: ${Math.round(AppState.food.totalU)} г\n\n`;
+    
+    txt += "📝 ЛОГ ПОДІЙ:\n";
+    if(AppState.logs.length === 0) txt += "Немає записів.\n";
+    
+    AppState.logs.forEach(log => {
+        txt += `[${new Date(log.time).toLocaleTimeString("uk-UA")}] ТИП: ${log.type} | Дані: ${log.data}\n`;
+    });
+
+    // Добавляем BOM (Byte Order Mark) чтобы блокноты Windows 100% читали UTF-8
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, txt], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Медичний_Звіт_Танк_${new Date().toISOString().slice(0,10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+};

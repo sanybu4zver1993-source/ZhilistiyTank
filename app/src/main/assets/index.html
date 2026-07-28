@@ -9,138 +9,116 @@
 <body>
     <div class="app-container">
         <header>
-            <h1>Жилистый Танк v2.1</h1>
+            <h1>Жилистый Танк v2.5 🦾</h1>
             <div class="status-bar" id="statusBar">
                 <span id="batteryStatus">🔋 Загрузка...</span>
-                <span id="alertStatus">🔵 Тревоги нет</span>
+                <span id="weatherStatus">🌤 Локация не задана</span>
             </div>
         </header>
         <main id="mainContent">
             <!-- Navigation -->
             <nav class="nav-grid">
-                <button class="nav-btn" onclick="showModule('alerts')">🚨 Воздушные тревоги</button>
-                <button class="nav-btn" onclick="showModule('grip')">🦾 Трекер хвата</button>
-                <button class="nav-btn" onclick="showModule('nutrition')">🍗 Дневник БЖУ</button>
-                <button class="nav-btn" onclick="showModule('breath')">🫁 Замеры Штанге/Генчи</button>
-                <button class="nav-btn" onclick="showModule('ortho')">🫀 Ортостатическая проба</button>
-                <button class="nav-btn" onclick="showModule('bodybattery')">🔋 Body Battery & Сон</button>
-                <button class="nav-btn bg-danger" onclick="showModule('sos')">🆘 SOS & Заземление</button>
-                <button class="nav-btn" onclick="showModule('export')">📄 Отчет для врача</button>
+                <button class="nav-btn" onclick="showModule('nutrition')">🍗 Смарт-БЖУ</button>
+                <button class="nav-btn" onclick="showModule('workout')">🏋️ Тренировки</button>
+                <button class="nav-btn bg-danger" onclick="showModule('sos')">🆘 Дыхание/SOS</button>
+                <button class="nav-btn" onclick="showModule('weather')">🌍 Гео & Метео</button>
+                <button class="nav-btn" onclick="showModule('export')">📄 Звіт (TXT)</button>
             </nav>
 
-            <!-- Modules Container -->
             <div id="modulesContainer">
                 <div id="module-empty" class="module active">
-                    <p class="empty-state">Выберите модуль в меню 👆</p>
+                    <p class="empty-state text-success font-bold mt-2">Stage 2 Active.<br>Скриншоты разблокированы.<br>Wakelock включен.</p>
                 </div>
                 
-                <div id="module-alerts" class="module">
-                    <h2>Воздушные тревоги (Чернигов)</h2>
-                    <div class="card">
-                        <button class="btn btn-primary" onclick="checkAlerts()">Проверить сейчас</button>
-                        <p id="alertResult" class="mt-2 text-center text-muted">Ожидание...</p>
-                    </div>
-                </div>
-
-                <div id="module-grip" class="module">
-                    <h2>Трекер хвата</h2>
-                    <div class="card flex-col gap-2">
-                        <div class="input-group">
-                            <label>Правая рука (кг)</label>
-                            <input type="number" id="gripRight" placeholder="60">
-                        </div>
-                        <div class="input-group">
-                            <label>Левая рука (кг)</label>
-                            <input type="number" id="gripLeft" placeholder="55">
-                        </div>
-                        <button class="btn btn-success" onclick="saveGrip()">Сохранить результат</button>
-                    </div>
-                    <div class="logs mt-2" id="gripLogs"></div>
-                </div>
-
+                <!-- СМАРТ БЖУ -->
                 <div id="module-nutrition" class="module">
-                    <h2>Дневник БЖУ</h2>
-                    <p class="text-muted">Простой счетчик фаз</p>
-                    <div class="grid-2 gap-2 mt-2">
-                        <button class="btn btn-outline" onclick="addFood('chicken')">🍗 Куриные лапы (+1)</button>
-                        <button class="btn btn-outline" onclick="addFood('fish')">🐟 Рыбьи хвосты (+1)</button>
-                        <button class="btn btn-outline" onclick="addFood('bones')">🦴 Мослы (+1)</button>
+                    <h2>🍗 Умный ввод БЖУ</h2>
+                    <div class="card flex-col gap-2">
+                        <p class="text-muted text-sm">Пиши как есть: "150г гречки, 2 шт яйца, 50г колбасы"</p>
+                        <textarea id="smartFoodInput" rows="3" placeholder="Пример: 150г гречки, 2 шт яйца..."></textarea>
+                        <button class="btn btn-primary" onclick="parseFoodString()">🧠 Распознать</button>
+                        
+                        <div id="smartParseResult" class="mt-2 text-sm border-gray" style="display:none; padding-top:8px;"></div>
+                        <button id="btnSaveSmartFood" class="btn btn-success mt-2" style="display:none;" onclick="commitSmartFood()">✅ Дописать в итог</button>
                     </div>
+
                     <div class="card mt-2">
-                        <h3>Съедено за день:</h3>
-                        <p>Куриные лапы: <span id="countChicken">0</span></p>
-                        <p>Рыбьи хвосты: <span id="countFish">0</span></p>
-                        <p>Мослы: <span id="countBones">0</span></p>
-                        <button class="btn btn-danger mt-2" onclick="resetFood()">Сбросить</button>
+                        <h3>Быстрые Шаблоны:</h3>
+                        <div class="grid-2 gap-2 mt-2">
+                            <button class="btn btn-outline text-sm" onclick="applyTemplate('Завтрак Танка')">Завтрак Танка<br><small>(Яйца, пшенка)</small></button>
+                            <button class="btn btn-outline text-sm" onclick="applyTemplate('Ужин Танка')">Ужин Танка<br><small>(Печень, салат)</small></button>
+                        </div>
+                    </div>
+
+                    <div class="card mt-2 text-center">
+                        <h3>Итог за день:</h3>
+                        <p class="text-main">Б: <span id="totalB" class="font-bold text-success">0</span> г | Ж: <span id="totalF" class="font-bold text-success">0</span> г | У: <span id="totalU" class="font-bold text-success">0</span> г</p>
+                        <button class="btn btn-danger mt-2" onclick="resetBJU()">Сбросить</button>
                     </div>
                 </div>
 
-                <div id="module-breath" class="module">
-                    <h2>Пробы по Штанге/Генчи (Bolt)</h2>
-                    <div class="card text-center">
-                        <div class="stopwatch" id="stopwatch">00:00.0</div>
-                        <div class="flex gap-2 justify-center mt-2">
-                            <button class="btn btn-primary" id="btnBreathStart" onclick="startBreath()">Старт</button>
-                            <button class="btn btn-danger" onclick="stopBreath()">Стоп</button>
+                <!-- ТРЕНИРОВКИ -->
+                <div id="module-workout" class="module">
+                    <h2>🏋️ Интерактивный Workout</h2>
+                    <div class="card mt-2">
+                        <h3>Эспандер / ИЗО-Таймер</h3>
+                        <p class="text-muted text-sm mb-2">Нажми старт, экран не погаснет. Следуй за таймером.</p>
+                        
+                        <div id="isoTimerDisplay" class="stopwatch text-center mb-2" style="font-size: 32px; padding: 20px; border-radius: 8px; background: var(--nav-bg);">
+                            ГОТОВ?
                         </div>
-                        <p class="mt-2 text-muted" id="breathResult"></p>
+                        
+                        <div class="flex gap-2">
+                            <button class="btn btn-primary" onclick="startIsoTimer(30)">Старт 30с</button>
+                            <button class="btn btn-danger" onclick="stopIsoTimer()">Стоп</button>
+                        </div>
+                        
+                        <hr class="border-gray">
+                        <h3>Трекинг подходов (3х15)</h3>
+                        <div class="flex gap-2 align-center">
+                            <button class="btn btn-outline" onclick="addRep()">+1 Подход</button>
+                            <span id="repCounter" class="font-bold text-success" style="font-size: 24px;">0 / 3</span>
+                        </div>
                     </div>
                 </div>
 
-                <div id="module-ortho" class="module">
-                    <h2>Ортостатическая проба</h2>
-                    <div class="card flex-col gap-2">
-                        <div class="input-group">
-                            <label>Пульс лежа (уд/мин)</label>
-                            <input type="number" id="hrLying" placeholder="60">
-                        </div>
-                        <div class="input-group">
-                            <label>Пульс стоя (уд/мин)</label>
-                            <input type="number" id="hrStanding" placeholder="80">
-                        </div>
-                        <button class="btn btn-success" onclick="calcOrtho()">Рассчитать</button>
-                        <p id="orthoResult" class="mt-2 text-bold text-center"></p>
-                    </div>
-                </div>
-
-                <div id="module-bodybattery" class="module">
-                    <h2>Body Battery & Окна сна</h2>
-                    <div class="card flex-col gap-2">
-                        <button class="btn btn-primary" onclick="calcBattery()">Рассчитать энергию</button>
-                        <div class="battery-bar mt-2">
-                            <div class="battery-fill" id="batteryFill" style="width: 0%"></div>
-                        </div>
-                        <p id="batteryText" class="text-center font-bold">--%</p>
-                        <hr>
-                        <h3>Окна сна</h3>
-                        <p class="text-muted">Если ляжете сейчас, оптимальное время пробуждения (циклы по 90м):</p>
-                        <ul id="sleepWindows" class="text-left"></ul>
-                    </div>
-                </div>
-
+                <!-- ДЫХАНИЕ / SOS -->
                 <div id="module-sos" class="module">
-                    <h2>SOS & Заземление</h2>
-                    <div class="card bg-dark text-white text-center">
-                        <h3>Дыхание 4-7-8</h3>
-                        <div class="breathing-circle" id="breathCircle">Вдох</div>
-                        <button class="btn btn-primary mt-2" onclick="startSOSBreath()">Запустить цикл</button>
-                        <hr class="border-gray mt-2">
-                        <h3>Техника "5-4-3-2-1"</h3>
-                        <ul class="text-left text-muted list-none">
-                            <li>👁 5 вещей, которые вы видите</li>
-                            <li>🖐 4 вещи, которые вы чувствуете</li>
-                            <li>👂 3 вещи, которые вы слышите</li>
-                            <li>👃 2 вещи, которые вы обоняете</li>
-                            <li>👅 1 вещь, которую вы можете попробовать</li>
-                        </ul>
+                    <h2>🆘 Интерактивный SOS</h2>
+                    <div class="card bg-dark text-white flex-col gap-2 text-center">
+                        <h3>Физиологический вздох</h3>
+                        <p class="text-muted text-sm mb-2">2 коротких вдоха, 1 долгий выдох. Снимает спазм ЦНС.</p>
+                        
+                        <div class="breathing-animator" id="breathSighCircle">ВЗДОХ</div>
+                        
+                        <button class="btn btn-primary mt-2" onclick="startSighAnimation()">Запустить анимацию</button>
+                        <button class="btn btn-danger mt-2" onclick="stopSighAnimation()">Остановить</button>
+                        
+                        <hr class="border-gray">
+                        <h3>Таймер NSDR (Yoga Nidra)</h3>
+                        <button class="btn btn-outline text-success" onclick="startNSDR()">Запустить таймер (15 мин)</button>
+                        <p id="nsdrDisplay" class="mt-2 font-bold text-main" style="display:none; font-size: 24px;">15:00</p>
                     </div>
                 </div>
 
+                <!-- ГЕО И ПОГОДА -->
+                <div id="module-weather" class="module">
+                    <h2>🌍 Метео-условия ЦНС</h2>
+                    <div class="card flex-col gap-2">
+                        <p class="text-muted text-sm">Без GPS. Введи город руками для запроса погоды и давления.</p>
+                        <input type="text" id="cityInput" placeholder="Например: Чернигов" value="Чернигов" class="input-group">
+                        <button class="btn btn-primary mt-2" onclick="fetchWeather()">Получить сводку</button>
+                        
+                        <div id="weatherResult" class="mt-2 text-center text-main font-bold" style="display:none;"></div>
+                    </div>
+                </div>
+
+                <!-- ЭКСПОРТ -->
                 <div id="module-export" class="module">
-                    <h2>Отчет для врача</h2>
+                    <h2>📄 Експорт Звіту</h2>
                     <div class="card text-center">
-                        <p class="text-muted">Выгрузка всех логов в формате JSON для пересылки врачу.</p>
-                        <button class="btn btn-success mt-2" onclick="exportData()">Скачать JSON Отчет</button>
+                        <p class="text-muted">Формування текстового файлу (.txt) у кодуванні UTF-8 з BOM. Лікарі прочитають без проблем.</p>
+                        <button class="btn btn-success mt-2" onclick="exportToTxt()">Завантажити звіт</button>
                     </div>
                 </div>
             </div>

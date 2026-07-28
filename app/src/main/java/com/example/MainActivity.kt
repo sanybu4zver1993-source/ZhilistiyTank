@@ -2,6 +2,7 @@ package com.example
 
 import android.annotation.SuppressLint
 import android.os.Bundle
+import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -20,6 +21,7 @@ import com.example.ui.theme.MyApplicationTheme
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // Wakelock для ИЗО-таймеров
     enableEdgeToEdge()
     setContent {
       MyApplicationTheme {
