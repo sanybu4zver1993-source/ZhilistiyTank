@@ -9,7 +9,7 @@
 <body>
     <div class="app-container">
         <header>
-            <h1>Жилистый Танк v2.5 🦾</h1>
+            <h1>Жилистый Танк v3.0 🦾</h1>
             <div class="status-bar" id="statusBar">
                 <span id="batteryStatus">🔋 Загрузка...</span>
                 <span id="weatherStatus">🌤 Локация не задана</span>
@@ -18,42 +18,89 @@
         <main id="mainContent">
             <!-- Navigation -->
             <nav class="nav-grid">
+                <button class="nav-btn" onclick="showModule('dashboard')">🎛 Главная</button>
                 <button class="nav-btn" onclick="showModule('nutrition')">🍗 Смарт-БЖУ</button>
+                <button class="nav-btn" onclick="showModule('water')">💧 Вода</button>
                 <button class="nav-btn" onclick="showModule('workout')">🏋️ Тренировки</button>
-                <button class="nav-btn bg-danger" onclick="showModule('sos')">🆘 Дыхание/SOS</button>
-                <button class="nav-btn" onclick="showModule('weather')">🌍 Гео & Метео</button>
+                <button class="nav-btn bg-danger" onclick="showModule('sos')">🆘 SOS & Ресурс</button>
                 <button class="nav-btn" onclick="showModule('export')">📄 Звіт (TXT)</button>
             </nav>
 
             <div id="modulesContainer">
-                <div id="module-empty" class="module active">
-                    <p class="empty-state text-success font-bold mt-2">Stage 2 Active.<br>Скриншоты разблокированы.<br>Wakelock включен.</p>
-                </div>
                 
-                <!-- СМАРТ БЖУ -->
-                <div id="module-nutrition" class="module">
-                    <h2>🍗 Умный ввод БЖУ</h2>
-                    <div class="card flex-col gap-2">
-                        <p class="text-muted text-sm">Пиши как есть: "150г гречки, 2 шт яйца, 50г колбасы"</p>
-                        <textarea id="smartFoodInput" rows="3" placeholder="Пример: 150г гречки, 2 шт яйца..."></textarea>
-                        <button class="btn btn-primary" onclick="parseFoodString()">🧠 Распознать</button>
-                        
-                        <div id="smartParseResult" class="mt-2 text-sm border-gray" style="display:none; padding-top:8px;"></div>
-                        <button id="btnSaveSmartFood" class="btn btn-success mt-2" style="display:none;" onclick="commitSmartFood()">✅ Дописать в итог</button>
+                <!-- ГЛАВНАЯ (DASHBOARD) -->
+                <div id="module-dashboard" class="module active">
+                    <h2>🎛 Оперативная сводка</h2>
+                    
+                    <div class="card mb-2">
+                        <h3>Активность (Тренировки)</h3>
+                        <div class="heatmap-grid" id="heatmapGrid"></div>
                     </div>
 
-                    <div class="card mt-2">
-                        <h3>Быстрые Шаблоны:</h3>
-                        <div class="grid-2 gap-2 mt-2">
-                            <button class="btn btn-outline text-sm" onclick="applyTemplate('Завтрак Танка')">Завтрак Танка<br><small>(Яйца, пшенка)</small></button>
-                            <button class="btn btn-outline text-sm" onclick="applyTemplate('Ужин Танка')">Ужин Танка<br><small>(Печень, салат)</small></button>
+                    <div class="card mb-2">
+                        <h3>🔋 Ресурс ЦНС: <span id="dashBatteryText" class="text-success">Оценка...</span></h3>
+                        <div class="battery-bar mt-2 mb-2"><div class="battery-fill" id="dashBatteryFill" style="width: 0%"></div></div>
+                        <div id="sosSuggestion" class="text-danger text-sm font-bold" style="display:none; padding-top:8px; border-top: 1px solid var(--border);">
+                            ⚠️ Метеоудар / Усталость! <button class="btn btn-outline mt-2" onclick="showModule('sos')">Запустить NSDR</button>
                         </div>
                     </div>
 
+                    <div class="card">
+                        <h3>💊 Стек БАДов на сегодня</h3>
+                        <div id="quickSuppsList" class="flex-col gap-2 mt-2"></div>
+                        <button class="btn btn-primary mt-2" onclick="takeGaviscon()">🌙 Гавискон на ночь (Быстро)</button>
+                    </div>
+                </div>
+                
+                <!-- СМАРТ БЖУ (HYBRID) -->
+                <div id="module-nutrition" class="module">
+                    <h2>🍗 Гибридный ввод БЖУ</h2>
+                    <div class="card flex-col gap-2">
+                        <p class="text-muted text-sm">Текст превращается в цифры на лету:</p>
+                        <textarea id="smartFoodInput" rows="2" placeholder="Напр: 150г каши, 2 яйца" oninput="autoParseFood()"></textarea>
+                        
+                        <div class="grid-2 gap-2 mt-2">
+                            <div class="input-group"><label>Название</label><input type="text" id="foodName" placeholder="Блюдо"></div>
+                            <div class="input-group"><label>Ккал</label><input type="number" id="foodKcal" placeholder="0"></div>
+                        </div>
+                        <div class="grid-3 gap-2 mt-2">
+                            <div class="input-group"><label>Б (г)</label><input type="number" id="foodB" placeholder="0"></div>
+                            <div class="input-group"><label>Ж (г)</label><input type="number" id="foodF" placeholder="0"></div>
+                            <div class="input-group"><label>У (г)</label><input type="number" id="foodU" placeholder="0"></div>
+                        </div>
+                        
+                        <button class="btn btn-success mt-2" onclick="saveHybridFood()">✅ Записать в итог</button>
+                    </div>
+
                     <div class="card mt-2 text-center">
-                        <h3>Итог за день:</h3>
+                        <h3>Съедено за день:</h3>
                         <p class="text-main">Б: <span id="totalB" class="font-bold text-success">0</span> г | Ж: <span id="totalF" class="font-bold text-success">0</span> г | У: <span id="totalU" class="font-bold text-success">0</span> г</p>
-                        <button class="btn btn-danger mt-2" onclick="resetBJU()">Сбросить</button>
+                        <p class="text-muted text-sm mt-2">Ккал: <span id="totalKcal" class="font-bold">0</span></p>
+                        <button class="btn btn-danger mt-2" onclick="resetBJU()">Сбросить всё</button>
+                    </div>
+                </div>
+
+                <!-- ВОДА -->
+                <div id="module-water" class="module">
+                    <h2>💧 Трекер гидратации (Цель: 3000 мл)</h2>
+                    <div class="card flex-col gap-2">
+                        <p class="text-muted text-sm mb-2">Теперь синхронизируется со шторкой Android!</p>
+                        <div class="battery-bar">
+                            <div class="battery-fill bg-water" id="waterFill" style="width: 0%"></div>
+                        </div>
+                        <p class="text-center font-bold mt-2" id="waterText">0 / 3000 мл</p>
+                        <div class="grid-2 gap-2 mt-2">
+                            <button class="btn btn-outline" onclick="addWater(250)">+ 250 мл</button>
+                            <button class="btn btn-outline" onclick="addWater(500)">+ 500 мл</button>
+                        </div>
+                        <div class="input-group mt-2">
+                            <label>Свой объем (мл)</label>
+                            <div class="flex gap-2">
+                                <input type="number" id="customWater" placeholder="300" style="flex: 1">
+                                <button class="btn btn-primary" style="width: auto" onclick="addCustomWater()">ОК</button>
+                            </div>
+                        </div>
+                        <button class="btn btn-danger mt-2" onclick="resetWater()">Сбросить воду</button>
                     </div>
                 </div>
 
@@ -61,22 +108,20 @@
                 <div id="module-workout" class="module">
                     <h2>🏋️ Интерактивный Workout</h2>
                     <div class="card mt-2">
-                        <h3>Эспандер / ИЗО-Таймер</h3>
-                        <p class="text-muted text-sm mb-2">Нажми старт, экран не погаснет. Следуй за таймером.</p>
-                        
+                        <h3>ИЗО-Таймер / Гиробол</h3>
                         <div id="isoTimerDisplay" class="stopwatch text-center mb-2" style="font-size: 32px; padding: 20px; border-radius: 8px; background: var(--nav-bg);">
                             ГОТОВ?
                         </div>
-                        
-                        <div class="flex gap-2">
-                            <button class="btn btn-primary" onclick="startIsoTimer(30)">Старт 30с</button>
-                            <button class="btn btn-danger" onclick="stopIsoTimer()">Стоп</button>
+                        <div class="grid-3 gap-2">
+                            <button class="btn btn-primary text-sm" onclick="startIsoTimer(30)">ИЗО 30с</button>
+                            <button class="btn btn-primary text-sm" onclick="startIsoTimer(60)">Гиро 60с</button>
+                            <button class="btn btn-danger text-sm" onclick="stopIsoTimer()">Стоп</button>
                         </div>
                         
                         <hr class="border-gray">
-                        <h3>Трекинг подходов (3х15)</h3>
+                        <h3>Блок: Гантели 4кг / Эспандер</h3>
                         <div class="flex gap-2 align-center">
-                            <button class="btn btn-outline" onclick="addRep()">+1 Подход</button>
+                            <button class="btn btn-outline" onclick="addRep()">+1 Подход (Зачет)</button>
                             <span id="repCounter" class="font-bold text-success" style="font-size: 24px;">0 / 3</span>
                         </div>
                     </div>
@@ -84,32 +129,17 @@
 
                 <!-- ДЫХАНИЕ / SOS -->
                 <div id="module-sos" class="module">
-                    <h2>🆘 Интерактивный SOS</h2>
+                    <h2>🆘 Протоколы SOS</h2>
                     <div class="card bg-dark text-white flex-col gap-2 text-center">
                         <h3>Физиологический вздох</h3>
-                        <p class="text-muted text-sm mb-2">2 коротких вдоха, 1 долгий выдох. Снимает спазм ЦНС.</p>
-                        
+                        <p class="text-muted text-sm mb-2">2 коротких вдоха, 1 долгий выдох.</p>
                         <div class="breathing-animator" id="breathSighCircle">ВЗДОХ</div>
-                        
-                        <button class="btn btn-primary mt-2" onclick="startSighAnimation()">Запустить анимацию</button>
-                        <button class="btn btn-danger mt-2" onclick="stopSighAnimation()">Остановить</button>
-                        
+                        <button class="btn btn-primary mt-2" onclick="startSighAnimation()">Старт цикла</button>
+                        <button class="btn btn-danger mt-2" onclick="stopSighAnimation()">Стоп</button>
                         <hr class="border-gray">
-                        <h3>Таймер NSDR (Yoga Nidra)</h3>
+                        <h3>NSDR (Yoga Nidra)</h3>
                         <button class="btn btn-outline text-success" onclick="startNSDR()">Запустить таймер (15 мин)</button>
                         <p id="nsdrDisplay" class="mt-2 font-bold text-main" style="display:none; font-size: 24px;">15:00</p>
-                    </div>
-                </div>
-
-                <!-- ГЕО И ПОГОДА -->
-                <div id="module-weather" class="module">
-                    <h2>🌍 Метео-условия ЦНС</h2>
-                    <div class="card flex-col gap-2">
-                        <p class="text-muted text-sm">Без GPS. Введи город руками для запроса погоды и давления.</p>
-                        <input type="text" id="cityInput" placeholder="Например: Чернигов" value="Чернигов" class="input-group">
-                        <button class="btn btn-primary mt-2" onclick="fetchWeather()">Получить сводку</button>
-                        
-                        <div id="weatherResult" class="mt-2 text-center text-main font-bold" style="display:none;"></div>
                     </div>
                 </div>
 
@@ -117,8 +147,7 @@
                 <div id="module-export" class="module">
                     <h2>📄 Експорт Звіту</h2>
                     <div class="card text-center">
-                        <p class="text-muted">Формування текстового файлу (.txt) у кодуванні UTF-8 з BOM. Лікарі прочитають без проблем.</p>
-                        <button class="btn btn-success mt-2" onclick="exportToTxt()">Завантажити звіт</button>
+                        <button class="btn btn-success mt-2" onclick="exportToTxt()">Завантажити JSON/TXT</button>
                     </div>
                 </div>
             </div>

@@ -1,8 +1,11 @@
 package com.example
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -26,19 +29,39 @@ class MainActivity : ComponentActivity() {
     setContent {
       MyApplicationTheme {
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-          WebAppWrapper(modifier = Modifier.padding(innerPadding))
+          WebAppWrapper(this, modifier = Modifier.padding(innerPadding))
         }
       }
     }
   }
 }
 
+class WebAppInterface(private val context: Context) {
+    private val prefs: SharedPreferences = context.getSharedPreferences("TankPrefs", Context.MODE_PRIVATE)
+
+    @JavascriptInterface
+    fun getWater(): Int {
+        return prefs.getInt("water_ml", 0)
+    }
+
+    @JavascriptInterface
+    fun addWater(amount: Int) {
+        val current = prefs.getInt("water_ml", 0)
+        prefs.edit().putInt("water_ml", current + amount).apply()
+    }
+    
+    @JavascriptInterface
+    fun resetWater() {
+        prefs.edit().putInt("water_ml", 0).apply()
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun WebAppWrapper(modifier: Modifier = Modifier) {
+fun WebAppWrapper(context: Context, modifier: Modifier = Modifier) {
   AndroidView(
-    factory = { context ->
-      WebView(context).apply {
+    factory = { ctx ->
+      WebView(ctx).apply {
         settings.apply {
           javaScriptEnabled = true
           domStorageEnabled = true
@@ -48,6 +71,7 @@ fun WebAppWrapper(modifier: Modifier = Modifier) {
           allowContentAccess = true
         }
 
+        addJavascriptInterface(WebAppInterface(context), "AndroidBridge")
         webViewClient = WebViewClient()
         webChromeClient = WebChromeClient()
         
@@ -57,3 +81,4 @@ fun WebAppWrapper(modifier: Modifier = Modifier) {
     modifier = modifier.fillMaxSize()
   )
 }
+
