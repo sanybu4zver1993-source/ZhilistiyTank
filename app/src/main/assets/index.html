@@ -5,28 +5,64 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Жилистый Танк</title>
     <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 </head>
 <body>
     <!-- LOGIN OVERLAY -->
     <div id="loginOverlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:var(--bg-color); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:white; padding: 20px; box-sizing: border-box;">
-        <h2 id="loginTitle" style="color:var(--primary); margin-bottom: 20px;">ВХОД В ТАНК</h2>
-        <div style="font-size: 32px; letter-spacing: 10px; margin-bottom: 20px; height: 40px; display: flex; gap: 10px;" id="pinDots">
-            <span>○</span><span>○</span><span>○</span><span>○</span>
+        
+        <!-- STANDARD PIN MODE -->
+        <div id="pinModeContainer" style="display:flex; flex-direction:column; align-items:center; width:100%;">
+            <h2 id="loginTitle" style="color:var(--primary); margin-bottom: 20px;">ВХОД В ТАНК</h2>
+            <div style="font-size: 32px; letter-spacing: 10px; margin-bottom: 20px; height: 40px; display: flex; gap: 10px;" id="pinDots">
+                <span>○</span><span>○</span><span>○</span><span>○</span>
+            </div>
+            <p id="loginMessage" class="text-muted text-sm mb-2 text-center" style="min-height: 40px;"></p>
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 15px; max-width: 300px; width: 100%;">
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(1)">1</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(2)">2</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(3)">3</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(4)">4</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(5)">5</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(6)">6</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(7)">7</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(8)">8</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(9)">9</button>
+                <button class="btn btn-danger" style="font-size:24px; padding: 15px;" onclick="clearPin()">C</button>
+                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(0)">0</button>
+                <button class="btn btn-primary" style="font-size:24px; padding: 15px;" onclick="submitPin()">→</button>
+            </div>
         </div>
-        <p id="loginMessage" class="text-muted text-sm mb-2 text-center" style="min-height: 40px;"></p>
-        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 15px; max-width: 300px; width: 100%;">
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(1)">1</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(2)">2</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(3)">3</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(4)">4</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(5)">5</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(6)">6</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(7)">7</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(8)">8</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(9)">9</button>
-            <button class="btn btn-danger" style="font-size:24px; padding: 15px;" onclick="clearPin()">C</button>
-            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(0)">0</button>
-            <button class="btn btn-primary" style="font-size:24px; padding: 15px;" onclick="submitPin()">→</button>
+
+        <!-- CYBERPUNK CALCULATOR MODE -->
+        <div id="calcModeContainer" style="display:none; flex-direction:column; align-items:center; width:100%; max-width:320px;">
+            <div style="width: 100%; background: #111; padding: 20px; border-radius: 8px; text-align: right; font-size: 40px; margin-bottom: 20px; min-height: 80px; overflow: hidden; font-family: monospace; color: #fff;" id="calcDisplay">
+                0
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 10px; width: 100%;">
+                <button class="btn btn-danger" style="font-size:20px; padding: 15px;" onclick="calcInput('C')">C</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('/')">/</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('*')">×</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px; color: var(--danger);" onclick="calcInput('-')">-</button>
+                
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('7')">7</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('8')">8</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('9')">9</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px; color: var(--success);" onclick="calcInput('+')">+</button>
+                
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('4')">4</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('5')">5</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('6')">6</button>
+                <button id="calcEqBtn" class="btn btn-primary" style="font-size:20px; padding: 15px; grid-row: span 2;" onclick="calcEq()">=</button>
+                
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('1')">1</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('2')">2</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('3')">3</button>
+                
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px; grid-column: span 2;" onclick="calcInput('0')">0</button>
+                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('.')">.</button>
+            </div>
+            <p class="text-muted text-xs mt-2">Cyberpunk Mode. Hold '=' for offline SOS.</p>
         </div>
     </div>
 
@@ -42,6 +78,7 @@
             <!-- Navigation -->
             <nav class="nav-grid">
                 <button class="nav-btn" onclick="showModule('dashboard')">🎛 Главная</button>
+                <button class="nav-btn" onclick="showModule('dossier')">🗃 Досье</button>
                 <button class="nav-btn" onclick="showModule('nutrition')">🍗 БЖУ</button>
                 <button class="nav-btn" onclick="showModule('water')">💧 Вода</button>
                 <button class="nav-btn" onclick="showModule('sleep')">🛌 Сон & ЦНС</button>
@@ -52,8 +89,8 @@
                 <button class="nav-btn" onclick="showModule('guide')">📚 Справочник</button>
                 <button class="nav-btn" onclick="showModule('share')">🥷 Анон. Карточка</button>
                 <button class="nav-btn" onclick="showModule('donate')">🥩 Шашлычок</button>
-                <button class="nav-btn" onclick="showModule('stegano')">🖼 Стеганография</button>
-                <button class="nav-btn" onclick="showModule('settings')">⚙️ API Ключи</button>
+                <button class="nav-btn cyberpunk-only" onclick="showModule('stegano')">🖼 Стеганография</button>
+                <button class="nav-btn cyberpunk-only" onclick="showModule('settings')">⚙️ API Ключи</button>
                 <button class="nav-btn" onclick="showModule('qr')">📲 QR-Обмен</button>
                 <button class="nav-btn bg-danger" onclick="showModule('sos')">🆘 SOS Протоколы</button>
                 <button class="nav-btn" onclick="showModule('export')">📄 Резерв (.tank)</button>
@@ -83,6 +120,34 @@
                     </div>
                 </div>
                 
+                <!-- ДОСЬЕ (МАСТЕР-ПРОФИЛЬ) -->
+                <div id="module-dossier" class="module">
+                    <h2>🗃 Личное Досье</h2>
+                    <div class="card flex-col gap-2">
+                        <p class="text-muted text-sm mb-2">Эти данные локальны. Они нужны для точных расчетов и контекста ИИ-тренера.</p>
+                        
+                        <label class="text-sm">Год рождения</label>
+                        <input type="number" id="dossierYear" placeholder="Например: 1993" onchange="saveDossier()">
+                        
+                        <label class="text-sm mt-2">Рост (см) & Вес (кг)</label>
+                        <div class="flex gap-2">
+                            <input type="number" id="dossierHeight" placeholder="180" style="flex:1" onchange="saveDossier()">
+                            <input type="number" step="0.1" id="dossierWeight" placeholder="85.5" style="flex:1" onchange="saveDossier()">
+                        </div>
+
+                        <label class="text-sm mt-2">Хронические состояния / Травмы</label>
+                        <textarea id="dossierConditions" rows="2" placeholder="Гастрит, травма правого плеча..." onchange="saveDossier()"></textarea>
+
+                        <label class="text-sm mt-2">Текущая главная цель</label>
+                        <select id="dossierGoal" class="p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onchange="saveDossier()">
+                            <option value="maintenance">Поддержание (Maintenance)</option>
+                            <option value="fat_loss">Сушка (Fat Loss)</option>
+                            <option value="muscle_gain">Масса (Muscle Gain)</option>
+                            <option value="rehab">Реабилитация / Восстановление ЦНС</option>
+                        </select>
+                    </div>
+                </div>
+
                 <!-- СМАРТ БЖУ (HYBRID) -->
                 <div id="module-nutrition" class="module">
                     <h2>🍗 Гибридный ввод БЖУ</h2>
@@ -402,8 +467,17 @@
 
                 <!-- НАСТРОЙКИ API -->
                 <div id="module-settings" class="module">
-                    <h2>⚙️ API & Нейросети</h2>
+                    <h2>⚙️ НАСТРОЙКИ & API</h2>
                     
+                    <div class="card flex-col gap-2 mb-2">
+                        <h3>🛡 РЕЖИМ БЕЗОПАСНОСТИ</h3>
+                        <p class="text-muted text-sm">Выбери уровень маскировки и изоляции данных.</p>
+                        <select id="securityMode" class="p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onchange="saveApiKeys()">
+                            <option value="civilian">Гражданский (Обычный ПИН)</option>
+                            <option value="cyberpunk">Киберпанк (Калькулятор + Стеганография)</option>
+                        </select>
+                    </div>
+
                     <div class="card flex-col gap-2">
                         <h3 class="text-success">🟢 ЗРЕНИЕ & АНАЛИЗ (Gemini)</h3>
                         <input type="password" id="geminiKey" placeholder="Google AI Studio API Key (бесплатно)">
@@ -469,6 +543,7 @@
         </main>
     </div>
     <script src="qrcode.min.js"></script>
+    <script src="cyberpunk.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

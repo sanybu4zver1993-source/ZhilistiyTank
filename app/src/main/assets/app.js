@@ -84,6 +84,8 @@ const saveUIState = () => {
         store.put({ key: "apiKeys", value: AppState.apiKeys });
         store.put({ key: "cnsTriggers", value: AppState.cnsTriggers });
         store.put({ key: "stressTriggers", value: AppState.stressTriggers });
+        store.put({ key: "dossier", value: AppState.dossier });
+        store.put({ key: "events", value: AppState.events });
     } catch (e) {}
 };
 
@@ -102,6 +104,8 @@ const loadState = () => {
         store.get("apiKeys").onsuccess = (e) => { if (e.target.result) AppState.apiKeys = e.target.result.value; if(window.loadApiKeysUI) window.loadApiKeysUI(); };
         store.get("cnsTriggers").onsuccess = (e) => { if (e.target.result) AppState.cnsTriggers = e.target.result.value; if(window.renderTriggers) window.renderTriggers(); };
         store.get("stressTriggers").onsuccess = (e) => { if (e.target.result) AppState.stressTriggers = e.target.result.value; if(window.renderTriggers) window.renderTriggers(); };
+        store.get("dossier").onsuccess = (e) => { if (e.target.result) AppState.dossier = e.target.result.value; if(window.loadDossierUI) window.loadDossierUI(); };
+        store.get("events").onsuccess = (e) => { if (e.target.result) AppState.events = e.target.result.value || []; };
         
         store.get("supps").onsuccess = (e) => { 
             if (e.target.result) {
@@ -939,11 +943,14 @@ window.exportShareCard = () => {
 
 // Init
 document.addEventListener("DOMContentLoaded", () => {
+    if(window.updateSecurityModeUI) window.updateSecurityModeUI();
+
     // Check if pins are set up
     const realPin = localStorage.getItem("tank_real_pin");
     const fakePin = localStorage.getItem("tank_fake_pin");
     
-    if (!realPin || !fakePin) {
+    const wipePin = localStorage.getItem("tank_wipe_pin");
+    if (!realPin || !fakePin || !wipePin) {
         document.getElementById("loginTitle").innerText = "SETUP REAL PIN";
         document.getElementById("loginMessage").innerText = "Создай основной ПИН-код (настоящие данные)";
     }
@@ -979,21 +986,32 @@ window.submitPin = () => {
     
     const realPin = localStorage.getItem("tank_real_pin");
     const fakePin = localStorage.getItem("tank_fake_pin");
+    const wipePin = localStorage.getItem("tank_wipe_pin");
     
-    if (!realPin || !fakePin) {
+    if (!realPin || !fakePin || !wipePin) {
         if (setupStep === 0) { setupStep = 1; }
         if (setupStep === 1) {
             localStorage.setItem("tank_real_pin", currentPinInput);
             document.getElementById("loginTitle").innerText = "SETUP FAKE PIN";
-            document.getElementById("loginMessage").innerText = "Создай тревожный ПИН-код (чистая база)";
+            document.getElementById("loginMessage").innerText = "Создай фейковый ПИН-код (пустышка без удаления)";
             setupStep = 2;
             window.clearPin();
             return;
         } else if (setupStep === 2) {
             if (currentPinInput === localStorage.getItem("tank_real_pin")) {
-                return showToast("Тревожный ПИН не может совпадать с основным!");
+                return showToast("Фейковый ПИН не может совпадать с основным!");
             }
             localStorage.setItem("tank_fake_pin", currentPinInput);
+            document.getElementById("loginTitle").innerText = "SETUP WIPE PIN";
+            document.getElementById("loginMessage").innerText = "Создай ТРЕВОЖНЫЙ ПИН-код (УДАЛЯЕТ ОСНОВНУЮ БАЗУ)";
+            setupStep = 3;
+            window.clearPin();
+            return;
+        } else if (setupStep === 3) {
+            if (currentPinInput === localStorage.getItem("tank_real_pin") || currentPinInput === localStorage.getItem("tank_fake_pin")) {
+                return showToast("Тревожный ПИН должен быть уникальным!");
+            }
+            localStorage.setItem("tank_wipe_pin", currentPinInput);
             setupStep = 0;
             document.getElementById("loginTitle").innerText = "ВХОД В ТАНК";
             document.getElementById("loginMessage").innerText = "Настройка завершена. Введите ПИН.";
@@ -1008,11 +1026,21 @@ window.submitPin = () => {
         document.getElementById("loginOverlay").style.display = "none";
         initDB().catch(console.error);
     } else if (currentPinInput === fakePin) {
+        // FAKE DB - NO WIPE
+        activeDBName = "VeinyTankDB_Fake";
+        document.getElementById("loginOverlay").style.display = "none";
+        initDB().catch(console.error);
+    } else if (currentPinInput === wipePin) {
+        // DURESS WIPE LOGIC
+        indexedDB.deleteDatabase("VeinyTankDB");
+        localStorage.removeItem("tank_real_pin");
         activeDBName = "VeinyTankDB_Fake";
         document.getElementById("loginOverlay").style.display = "none";
         initDB().catch(console.error);
     } else {
-        showToast("Неверный ПИН-код!");
+        showToast("Неверный ПИН-код");
+        document.getElementById("pinDots").classList.add("shake");
+        setTimeout(() => document.getElementById("pinDots").classList.remove("shake"), 500);
         window.clearPin();
     }
 };
@@ -1347,20 +1375,10 @@ window.toggleReminders = () => {
         btn.className = "btn btn-primary";
         showToast("Уведомления выключены.");
     } else {
-        if ("Notification" in window) {
-            Notification.requestPermission().then(permission => {
-                if (permission === "granted") {
-                    startRemindersLoop();
-                    btn.innerText = "🔕 Выключить уведомления";
-                    btn.className = "btn btn-outline border-danger text-danger";
-                    showToast("Уведомления активированы!");
-                } else {
-                    showToast("Нет разрешения на уведомления.");
-                }
-            });
-        } else {
-            showToast("Уведомления не поддерживаются в браузере.");
-        }
+        startRemindersLoop();
+        btn.innerText = "🔕 Выключить уведомления";
+        btn.className = "btn btn-outline border-danger text-danger";
+        showToast("Уведомления активированы (Native)!");
     }
 };
 
@@ -1368,18 +1386,50 @@ function startRemindersLoop() {
     remindersInterval = setInterval(() => {
         const now = new Date();
         const h = now.getHours();
+        const m = now.getMinutes();
         
         // Reminder every 2 hours during day for water
-        if (h >= 8 && h <= 22 && now.getMinutes() === 0) {
+        if (h >= 8 && h <= 22 && m === 0) {
             if(AppState.water < 3000) {
-                new Notification("💧 Танк, выпей воды!", { body: `Выпито: ${AppState.water}/3000 мл` });
+                if(window.AndroidBridge && window.AndroidBridge.showNotification) {
+                    window.AndroidBridge.showNotification("💧 Танк, выпей воды!", `Выпито: ${AppState.water}/3000 мл`);
+                } else {
+                    showToast("💧 Танк, выпей воды!");
+                }
             }
         }
         
         // Reminder for Sleep / Meds at 22:00
-        if (h === 22 && now.getMinutes() === 0) {
-            new Notification("💊 Вечерняя Фарма", { body: "Выпей Гавискон и Магний глицинат. Готовься ко сну." });
+        if (h === 22 && m === 0) {
+            if(window.AndroidBridge && window.AndroidBridge.showNotification) {
+                window.AndroidBridge.showNotification("💊 Вечерняя Фарма", "Выпей Гавискон и Магний глицинат. Готовься ко сну.");
+            } else {
+                showToast("💊 Вечерняя Фарма");
+            }
         }
     }, 60000); // Check every minute
 }
+
+// ==========================================
+// 17. FAIL-CLOSED SECURITY & PANIC
+// ==========================================
+window.panicLock = () => {
+    currentPinInput = "";
+    activeDBName = "VeinyTankDB";
+    document.getElementById("loginTitle").innerText = "БЛОКИРОВКА БЕЗОПАСНОСТИ";
+    document.getElementById("loginTitle").style.color = "var(--danger)";
+    document.getElementById("loginMessage").innerText = "Произошла ошибка или попытка несанкционированного доступа. Введите ПИН.";
+    document.getElementById("loginOverlay").style.display = "flex";
+    updatePinDots();
+};
+
+window.addEventListener('error', (e) => {
+    console.error("Fail-Closed Triggered:", e.error);
+    window.panicLock();
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+    console.error("Fail-Closed Triggered (Promise):", e.reason);
+    window.panicLock();
+});
 
