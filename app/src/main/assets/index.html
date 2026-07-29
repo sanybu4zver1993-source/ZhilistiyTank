@@ -83,6 +83,7 @@
                 <button class="nav-btn" onclick="showModule('water')">💧 Вода</button>
                 <button class="nav-btn" onclick="showModule('sleep')">🛌 Сон & ЦНС</button>
                 <button class="nav-btn" onclick="showModule('workout')">🏋️ Тренировки</button>
+                <button class="nav-btn" onclick="showModule('chat')">💬 Тренер</button>
                 <button class="nav-btn" onclick="showModule('biometrics')">🧬 Биометрия (PVT)</button>
                 <button class="nav-btn" onclick="showModule('pharma')">☕ Фарма</button>
                 <button class="nav-btn" onclick="showModule('insights')">🧠 Инсайты</button>
@@ -263,9 +264,10 @@
                             ГОТОВ?
                         </div>
                         <div class="grid-3 gap-2">
-                            <button class="btn btn-primary text-sm" id="iso30btn" onclick="startIsoTimer(30)">ИЗО 30с</button>
-                            <button class="btn btn-primary text-sm" id="iso60btn" onclick="startIsoTimer(60)">Гиро 60с</button>
-                            <button class="btn btn-danger text-sm" onclick="stopIsoTimer()">Стоп</button>
+                            <button class="btn btn-primary text-sm" id="iso30btn" onclick="startIsoTimer(45, 'expander')">Эспандер 45с</button>
+                            <button class="btn btn-primary text-sm" id="iso60btn" onclick="startIsoTimer(60, 'gyroball')">Гиро 60с</button>
+                            <button class="btn btn-primary text-sm" id="isoDbbtn" onclick="startIsoTimer(30, 'dumbbells')">Гантели 30с</button>
+                            <button class="btn btn-danger text-sm" onclick="stopIsoTimer()" style="grid-column: span 3;">Стоп таймер</button>
                         </div>
                         
                         <hr class="border-gray">
@@ -296,6 +298,19 @@
                 </div>
 
                 <!-- ДЫХАНИЕ / SOS -->
+                <!-- CHAT MODULE -->
+                <div id="module-chat" class="module">
+                    <h2>💬 ИИ-Тренер</h2>
+                    <div class="card flex-col gap-2 mt-2" style="height: 60vh; display: flex; flex-direction: column;">
+                        <div id="chatHistory" style="flex: 1; overflow-y: auto; background: var(--bg); padding: 10px; border-radius: 8px; display: flex; flex-direction: column; gap: 10px;">
+                            <div class="text-muted text-sm text-center">Тренер готов. Задай вопрос о своем состоянии.</div>
+                        </div>
+                        <div class="flex gap-2">
+                            <input type="text" id="chatInput" class="input flex-1" placeholder="Спроси тренера...">
+                            <button class="btn btn-primary" onclick="sendChatMessage()">🚀</button>
+                        </div>
+                    </div>
+                </div>
                 <div id="module-sos" class="module">
                     <h2>🆘 Триггеры и SOS</h2>
                     <div class="grid-2 gap-2 mb-2">
@@ -544,6 +559,7 @@
     </div>
     <script src="qrcode.min.js"></script>
     <script src="cyberpunk.js"></script>
+    <script src="cyberpunk_ai.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

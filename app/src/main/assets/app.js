@@ -110,6 +110,29 @@ const loadState = () => {
         store.get("stressTriggers").onsuccess = (e) => { if (e.target.result) AppState.stressTriggers = e.target.result.value; if(window.renderTriggers) window.renderTriggers(); };
         store.get("dossier").onsuccess = (e) => { if (e.target.result) AppState.dossier = e.target.result.value; if(window.loadDossierUI) window.loadDossierUI(); };
         store.get("events").onsuccess = (e) => { if (e.target.result) AppState.events = e.target.result.value || []; };
+        tx.oncomplete = () => {
+            if (activeDBName === "VeinyTankDB_Fake" && AppState.water === 0 && (!AppState.sleepLogs || AppState.sleepLogs.length === 0)) {
+                // Populate Fake DB with realistic noise
+                AppState.water = 1500;
+                AppState.bodyBattery = 85;
+                const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+                AppState.sleepLogs = [{
+                    start: "23:00",
+                    end: "07:00",
+                    hrs: 8,
+                    date: yesterday
+                }];
+                AppState.food = { totalB: 120, totalF: 60, totalU: 200, totalKcal: 1820 };
+                AppState.events = [
+                    { type: "water", payload: { ml: 500 }, occurred_at: yesterday },
+                    { type: "water", payload: { ml: 1000 }, occurred_at: new Date().toISOString() }
+                ];
+                saveUIState();
+                updateFoodUI();
+                syncWaterFromNative();
+                if(window.calculateRecoveryScore) window.calculateRecoveryScore(); else updateBodyBatteryUI();
+            }
+        };
         
         store.get("supps").onsuccess = (e) => { 
             if (e.target.result) {
@@ -425,21 +448,23 @@ function updateWorkoutUI() {
         wTitle.innerHTML = "<span class='text-danger'>Режим: DELOAD (ЦНС истощена)</span>";
         block2.style.display = "none";
         block3.style.display = "none";
-        document.getElementById("iso30btn").innerText = "ИЗО 15с (Deload)";
-        document.getElementById("iso30btn").onclick = () => startIsoTimer(15);
+        document.getElementById("iso30btn").innerText = "Эспандер 15с (Deload)";
+        document.getElementById("iso30btn").onclick = () => startIsoTimer(15, 'expander');
         document.getElementById("iso60btn").style.display = "none";
+        if(document.getElementById("isoDbbtn")) document.getElementById("isoDbbtn").style.display = "none";
     } else {
         wTitle.innerHTML = "<span class='text-success'>Режим: НОРМА</span>";
         block2.style.display = "block";
         block3.style.display = "block";
-        document.getElementById("iso30btn").innerText = "ИЗО 30с";
-        document.getElementById("iso30btn").onclick = () => startIsoTimer(30);
+        document.getElementById("iso30btn").innerText = "Эспандер 45с";
+        document.getElementById("iso30btn").onclick = () => startIsoTimer(45, 'expander');
         document.getElementById("iso60btn").style.display = "inline-block";
+        if(document.getElementById("isoDbbtn")) document.getElementById("isoDbbtn").style.display = "inline-block";
     }
 }
 
 let isoTimer;
-window.startIsoTimer = (seconds) => {
+window.startIsoTimer = (seconds, gear) => {
     stopIsoTimer();
     const display = document.getElementById("isoTimerDisplay");
     let time = seconds;
@@ -452,6 +477,8 @@ window.startIsoTimer = (seconds) => {
         if (time <= 0) {
             stopIsoTimer(); display.style.backgroundColor = "var(--success)"; display.innerText = "ОТДЫХ!";
             if (navigator.vibrate) navigator.vibrate([500]); 
+            if(window.logEvent) window.logEvent('workout', { gear: gear || 'iso', duration_s: seconds, rpe: 8 });
+            if(window.calculateRecoveryScore) window.calculateRecoveryScore();
         }
     }, 1000);
 };
@@ -1333,69 +1360,6 @@ document.addEventListener("DOMContentLoaded", () => {
 // ==========================================
 // 15. VISION API (GEMINI) FOR FOOD
 // ==========================================
-window.analyzeFoodImage = async (event) => {
-    const file = event.target.files[0];
-    if(!file) return;
-    
-    if(!AppState.apiKeys || !AppState.apiKeys.gemini) {
-        showToast("Сначала укажи ключ Gemini API в Настройках!");
-        return;
-    }
-    
-    const key = AppState.apiKeys.gemini;
-    const model = AppState.apiKeys.geminiModel || "gemini-3.1-flash";
-    
-    showToast("Анализирую еду через Gemini...");
-    
-    try {
-        // Read file as base64
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-            const base64data = reader.result.split(',')[1];
-            
-            const prompt = "Ты эксперт-диетолог. Проанализируй это фото еды. Ответь СТРОГО в формате JSON без markdown и лишнего текста: {\"name\": \"название блюда\", \"kcal\": число, \"b\": число, \"f\": число, \"u\": число}. Рассчитай калории и БЖУ максимально точно на основе стандартных данных. Если не можешь определить точно, дай обоснованную оценку.";
-            
-            const payload = {
-                contents: [{
-                    parts: [
-                        {text: prompt},
-                        {inline_data: { mime_type: file.type, data: base64data }}
-                    ]
-                }]
-            };
-            
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(payload)
-            });
-            
-            const data = await res.json();
-            if(data.candidates && data.candidates[0].content.parts[0].text) {
-                let txt = data.candidates[0].content.parts[0].text;
-                txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
-                
-                try {
-                    const parsed = JSON.parse(txt);
-                    document.getElementById("foodName").value = parsed.name || "Еда с фото";
-                    document.getElementById("foodKcal").value = parsed.kcal || 0;
-                    document.getElementById("foodB").value = parsed.b || 0;
-                    document.getElementById("foodF").value = parsed.f || 0;
-                    document.getElementById("foodU").value = parsed.u || 0;
-                    showToast("Распознано! Можешь отредактировать и нажать 'Записать в итог'.");
-                } catch(e) {
-                    showToast("Ошибка парсинга JSON от Gemini. Попробуй еще раз.");
-                    console.error("Raw response:", txt);
-                }
-            } else {
-                showToast("Ошибка ответа от API");
-            }
-        };
-        reader.readAsDataURL(file);
-    } catch(e) {
-        showToast("Ошибка загрузки фото");
-    }
-};
 
 // ==========================================
 // 16. REMINDERS SYSTEM

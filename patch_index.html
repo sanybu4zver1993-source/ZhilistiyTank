@@ -1,0 +1,13 @@
+                <!-- CHAT MODULE -->
+                <div id="module-chat" class="module">
+                    <h2>💬 ИИ-Тренер</h2>
+                    <div class="card flex-col gap-2 mt-2" style="height: 60vh; display: flex; flex-direction: column;">
+                        <div id="chatHistory" style="flex: 1; overflow-y: auto; background: var(--bg); padding: 10px; border-radius: 8px; display: flex; flex-direction: column; gap: 10px;">
+                            <div class="text-muted text-sm text-center">Тренер готов. Задай вопрос о своем состоянии.</div>
+                        </div>
+                        <div class="flex gap-2">
+                            <input type="text" id="chatInput" class="input flex-1" placeholder="Спроси тренера...">
+                            <button class="btn btn-primary" onclick="sendChatMessage()">🚀</button>
+                        </div>
+                    </div>
+                </div>
