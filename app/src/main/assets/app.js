@@ -111,22 +111,34 @@ const loadState = () => {
         store.get("dossier").onsuccess = (e) => { if (e.target.result) AppState.dossier = e.target.result.value; if(window.loadDossierUI) window.loadDossierUI(); };
         store.get("events").onsuccess = (e) => { if (e.target.result) AppState.events = e.target.result.value || []; };
         tx.oncomplete = () => {
-            if (activeDBName === "VeinyTankDB_Fake" && AppState.water === 0 && (!AppState.sleepLogs || AppState.sleepLogs.length === 0)) {
-                // Populate Fake DB with realistic noise
-                AppState.water = 1500;
-                AppState.bodyBattery = 85;
-                const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-                AppState.sleepLogs = [{
-                    start: "23:00",
-                    end: "07:00",
-                    hrs: 8,
-                    date: yesterday
-                }];
-                AppState.food = { totalB: 120, totalF: 60, totalU: 200, totalKcal: 1820 };
-                AppState.events = [
-                    { type: "water", payload: { ml: 500 }, occurred_at: yesterday },
-                    { type: "water", payload: { ml: 1000 }, occurred_at: new Date().toISOString() }
-                ];
+            if (activeDBName === "VeinyTankDB_Fake") {
+                const now = new Date();
+                const yesterdayStr = new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
+                if (AppState.water === 0 && (!AppState.sleepLogs || AppState.sleepLogs.length === 0)) {
+                    // Seed initial Fake DB
+                    AppState.water = 1500;
+                    AppState.bodyBattery = 85;
+                    AppState.sleepLogs = [{ start: "23:00", end: "07:00", hrs: 8, date: yesterdayStr }];
+                    AppState.food = { totalB: 120, totalF: 60, totalU: 200, totalKcal: 1820 };
+                    AppState.events = [
+                        { type: "water", payload: { ml: 500 }, occurred_at: yesterdayStr },
+                        { type: "water", payload: { ml: 1000 }, occurred_at: now.toISOString() }
+                    ];
+                    AppState.lastResetDate = now.toISOString().slice(0, 10);
+                } else if (AppState.events && AppState.events.length > 0) {
+                    // Aging Fake DB: catch up to today
+                    const sorted = [...AppState.events].sort((a,b) => new Date(b.occurred_at) - new Date(a.occurred_at));
+                    const lastEventDate = new Date(sorted[0].occurred_at);
+                    const diffDays = Math.floor((now - lastEventDate) / (1000 * 60 * 60 * 24));
+                    
+                    if (diffDays >= 1) {
+                        for(let i = 1; i <= diffDays; i++) {
+                            const d = new Date(lastEventDate.getTime() + i * 24 * 3600 * 1000).toISOString();
+                            AppState.events.push({ type: "water", payload: { ml: 1200 }, occurred_at: d });
+                            if(i % 2 === 0) AppState.events.push({ type: "sleep", payload: { hrs: 7.5 }, occurred_at: d });
+                        }
+                    }
+                }
                 saveUIState();
                 updateFoodUI();
                 syncWaterFromNative();
@@ -237,6 +249,17 @@ window.saveHybridFood = () => {
     const u = safeParseInt(document.getElementById("foodU").value);
     const k = safeParseInt(document.getElementById("foodKcal").value);
     
+    // User Edit Tracker
+    if (window.lastAiFoodPrediction) {
+        const diff = Math.abs(window.lastAiFoodPrediction - k) / window.lastAiFoodPrediction;
+        if (diff > 0.25) {
+            AppState.foodEditErrors = (AppState.foodEditErrors || 0) + 1;
+        } else if (diff < 0.1) {
+            AppState.foodEditErrors = Math.max(0, (AppState.foodEditErrors || 0) - 1);
+        }
+        window.lastAiFoodPrediction = null; // reset
+    }
+
     if(window.logEvent) window.logEvent("food", { name: name, B: b, F: f, U: u, Kcal: k });
 
     AppState.food.totalB += b; AppState.food.totalF += f;
@@ -250,7 +273,7 @@ window.saveHybridFood = () => {
     document.getElementById("foodF").value = "";
     document.getElementById("foodU").value = "";
     document.getElementById("foodKcal").value = "";
-    showToast("БЖУ добавлено!");
+    if (document.getElementById("foodImageStatus")) document.getElementById("foodImageStatus").innerText = "";
 };
 
 window.resetBJU = () => { AppState.food = { totalB: 0, totalF: 0, totalU: 0, totalKcal: 0 }; saveUIState(); updateFoodUI(); };
@@ -310,9 +333,13 @@ function renderSupps() {
             }
             saveUIState();
             if(e.target.checked) {
-                if(key === 'mag') showToast("Магний: Лучше за 1-2ч до сна. Не смешивать с кальцием/цинком!");
-                if(key === 'succinic') showToast("Янтарная кислота: Строго после еды (бережем желудок).");
+                if(key === 'mag') {
+                    showToast("Магний: Лучше за 1-2ч до сна.");
+                    if(window.scheduleNativePush) window.scheduleNativePush("Сон", "Пора спать, магний уже действует!", 120);
+                }
+                if(key === 'succinic') showToast("Янтарная кислота: Строго после еды.");
                 if(key === 'gaviscon') showToast("Гавискон: Строго перед сном.");
+                if(key !== 'mag' && window.scheduleNativePush) window.scheduleNativePush("Витамины", "Не забудь про вечернюю порцию!", 240);
             }
             if(window.checkSuppConflicts) window.checkSuppConflicts();
         };
@@ -416,6 +443,7 @@ window.addWater = (ml) => {
     if(window.logEvent) window.logEvent("water", { ml: ml });
     if(window.AndroidBridge) { window.AndroidBridge.addWater(ml); syncWaterFromNative(); } 
     else { AppState.water += ml; saveUIState(); updateWaterUI(); }
+    if(window.scheduleNativePush) window.scheduleNativePush("Вода", "Пора выпить еще стакан воды!", 60);
 };
 window.addCustomWater = () => {
     const val = safeParseInt(document.getElementById("customWater").value);
@@ -479,6 +507,7 @@ window.startIsoTimer = (seconds, gear) => {
             if (navigator.vibrate) navigator.vibrate([500]); 
             if(window.logEvent) window.logEvent('workout', { gear: gear || 'iso', duration_s: seconds, rpe: 8 });
             if(window.calculateRecoveryScore) window.calculateRecoveryScore();
+            if(window.scheduleNativePush) window.scheduleNativePush("Тренировка", "Пора сделать следующий подход!", 2);
         }
     }, 1000);
 };
@@ -1433,3 +1462,25 @@ window.addEventListener('unhandledrejection', (e) => {
     window.panicLock();
 });
 
+window.applyFoodPreset = (name, b, f, u, kcal) => {
+    if(window.logEvent) window.logEvent("food", { name: name, B: b, F: f, U: u, Kcal: kcal });
+    AppState.food.totalB += b; 
+    AppState.food.totalF += f;
+    AppState.food.totalU += u; 
+    AppState.food.totalKcal += kcal;
+    saveUIState(); 
+    updateFoodUI();
+    showToast(`✅ ${name} добавлен!`);
+};
+window.scheduleNativePush = (title, message, delayMinutes) => {
+    if(window.AndroidBridge && window.AndroidBridge.postMessage) {
+        window.AndroidBridge.postMessage(JSON.stringify({
+            type: 'schedule_notification',
+            title: title,
+            message: message,
+            delayMinutes: delayMinutes
+        }));
+    } else {
+        console.log(`[Mock Push in ${delayMinutes}m] ${title}: ${message}`);
+    }
+};

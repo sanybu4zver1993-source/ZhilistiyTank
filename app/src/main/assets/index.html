@@ -160,42 +160,22 @@
                             <input type="file" id="foodVisionInput" accept="image/*" style="display:none" onchange="analyzeFoodImage(event)">
                         </div>
                         
-                        <div class="grid-3 gap-2 mt-2">
-                            <button class="btn btn-outline text-sm" onclick="applyPreset('breakfast')">Завтрак Танка</button>
-                            <button class="btn btn-outline text-sm" onclick="applyPreset('snack')">Перекус</button>
-                            <button class="btn btn-outline text-sm" onclick="applyPreset('dinner')">Обед/Ужин</button>
+                        <div class="grid-2 gap-2 mt-2">
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Каша с бананом', 12, 3, 75, 400)">Каша с бананом</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Творог', 36, 10, 5, 250)">Творог</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Жареная печень', 35, 12, 10, 290)">Жареная печень</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Яйца', 26, 22, 2, 310)">Яйца</button>
                         </div>
-
                         <div class="grid-2 gap-2 mt-2">
                             <div class="input-group"><label>Название</label><input type="text" id="foodName" placeholder="Блюдо"></div>
                             <div class="input-group"><label>Ккал</label><input type="number" id="foodKcal" placeholder="0"></div>
                         </div>
-                        <div class="grid-3 gap-2 mt-2">
-                            <div class="input-group"><label>Б (г)</label><input type="number" id="foodB" placeholder="0"></div>
-                            <div class="input-group"><label>Ж (г)</label><input type="number" id="foodF" placeholder="0"></div>
-                            <div class="input-group"><label>У (г)</label><input type="number" id="foodU" placeholder="0"></div>
+                        <div class="grid-2 gap-2 mt-2">
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Каша с бананом', 12, 3, 75, 400)">Каша с бананом</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Творог', 36, 10, 5, 250)">Творог</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Жареная печень', 35, 12, 10, 290)">Жареная печень</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Яйца', 26, 22, 2, 310)">Яйца</button>
                         </div>
-                        
-                        <button class="btn btn-success mt-2" onclick="saveHybridFood()">✅ Записать в итог</button>
-                    </div>
-
-                    <div class="card mt-2 text-center">
-                        <h3>Съедено за день:</h3>
-                        <p class="text-main">Б: <span id="totalB" class="font-bold text-success">0</span> г | Ж: <span id="totalF" class="font-bold text-success">0</span> г | У: <span id="totalU" class="font-bold text-success">0</span> г</p>
-                        <p class="text-muted text-sm mt-2">Ккал: <span id="totalKcal" class="font-bold">0</span></p>
-                        <button class="btn btn-danger mt-2" onclick="resetBJU()">Сбросить всё</button>
-                    </div>
-                </div>
-
-                <!-- ВОДА -->
-                <div id="module-water" class="module">
-                    <h2>💧 Трекер гидратации</h2>
-                    <div class="card flex-col gap-2">
-                        <p class="text-muted text-sm mb-2">Синхронизируется со шторкой Android.</p>
-                        <div class="battery-bar">
-                            <div class="battery-fill bg-water" id="waterFill" style="width: 0%"></div>
-                        </div>
-                        <p class="text-center font-bold mt-2" id="waterText">0 / 3000 мл</p>
                         <div class="grid-2 gap-2 mt-2">
                             <button class="btn btn-outline" onclick="addWater(250)">+ 250 мл</button>
                             <button class="btn btn-outline" onclick="addWater(500)">+ 500 мл</button>
@@ -371,195 +351,9 @@
                             Внимание! Высокий уровень кофеина. Активируй 15-мин NSDR перед сном!
                         </div>
                         
-                        <div class="grid-3 gap-2 mt-2">
-                            <button class="btn btn-outline text-sm" onclick="addCaffeine(40)">+ 40мг (Чай)</button>
-                            <button class="btn btn-outline text-sm" onclick="addCaffeine(80)">+ 80мг (Кофе)</button>
-                            <button class="btn btn-outline text-sm" onclick="addCaffeine(150)">+ 150мг (Энерг.)</button>
+                        <div class="grid-2 gap-2 mt-2">
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Каша с бананом', 12, 3, 75, 400)">Каша с бананом</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Творог', 36, 10, 5, 250)">Творог</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Жареная печень', 35, 12, 10, 290)">Жареная печень</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Яйца', 26, 22, 2, 310)">Яйца</button>
                         </div>
-                        <button class="btn btn-danger mt-2" onclick="resetCaffeine()">Очистить кровь</button>
-                    </div>
-                </div>
-
-                <!-- СТЕГАНОГРАФИЯ -->
-                <div id="module-stegano" class="module">
-                    <h2>🖼 Стеганография (.tank)</h2>
-                    <div class="card flex-col gap-2 text-center">
-                        <p class="text-muted text-sm mb-2">Зашифровать БД внутрь картинки (LSB) без изменения её внешнего вида.</p>
-                        <input type="file" id="steganoImageInput" accept="image/*" style="display:none" onchange="encodeStegano()">
-                        <button class="btn btn-primary" onclick="document.getElementById('steganoImageInput').click()">1. Спрятать бэкап в фото</button>
-                        
-                        <hr class="border-gray mt-2 mb-2">
-                        <p class="text-muted text-sm mb-2">Восстановить БД из стего-фотографии (только PNG, так как JPEG сжимает LSB).</p>
-                        <input type="file" id="steganoDecodeInput" accept="image/png" style="display:none" onchange="decodeStegano()">
-                        <button class="btn btn-outline text-success" onclick="document.getElementById('steganoDecodeInput').click()">2. Извлечь бэкап из фото</button>
-                    </div>
-                </div>
-
-                <!-- QR ОБМЕН -->
-                <div id="module-qr" class="module">
-                    <h2>📲 Offline QR-Обмен</h2>
-                    <div class="card flex-col gap-2 text-center">
-                        <p class="text-muted text-sm mb-2">Сгенерировать Sneakernet QR-код для передачи профиля.</p>
-                        <button class="btn btn-primary" onclick="generateQR()">Сгенерировать QR</button>
-                        
-                        <div id="qrCodeContainer" class="mt-2 flex-col align-center" style="display:none; align-items: center; background: white; padding: 15px; border-radius: 8px;">
-                            <div id="qrcode"></div>
-                            <p class="text-dark text-sm mt-2 font-bold" style="color: black;">Сканируй с другого Танка</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- ИНСАЙТЫ (CORRELATION ENGINE) -->
-                <div id="module-insights" class="module">
-                    <h2>🧠 Локальная Аналитика</h2>
-                    <div class="card flex-col gap-2">
-                        <h3>Скрытые связи (Байес)</h3>
-                        <p class="text-muted text-sm mb-2">Поиск корреляций ЦНС, сна и БАДов.</p>
-                        <button class="btn btn-outline" onclick="runCorrelationEngine()">🔍 Запустить Insight Miner</button>
-                        <div id="insightResults" class="mt-2 text-sm text-main" style="display:none; padding: 10px; border: 1px solid var(--border); border-radius: 8px;">
-                        </div>
-                    </div>
-                </div>
-
-                <!-- СПРАВОЧНИК ВЫЖИВАНИЯ -->
-                <div id="module-guide" class="module">
-                    <h2>📚 Офлайн-Справочник</h2>
-                    <div class="card flex-col gap-2">
-                        <input type="text" id="guideSearch" placeholder="Поиск (напр: гипотермия, паника)..." oninput="searchGuide()">
-                        <div id="guideContent" class="mt-2 flex-col gap-2">
-                            <!-- Cards will be rendered here -->
-                        </div>
-                    </div>
-                </div>
-
-                <!-- АНОНИМНЫЕ КАРТОЧКИ -->
-                <div id="module-share" class="module">
-                    <h2>🥷 Анон. Share-Карточка</h2>
-                    <div class="card flex-col gap-2 text-center">
-                        <p class="text-muted text-sm mb-2">Сгенерировать красивую картинку прогресса без метаданных (EXIF).</p>
-                        
-                        <div id="shareCardPreview" style="padding: 15px; border: 2px solid var(--primary); border-radius: 8px; background: #111; color: white;">
-                            <h3 style="color: var(--primary);">Жилистый Танк 🦾</h3>
-                            <p id="shareCardStats" class="mt-2 text-sm"></p>
-                        </div>
-
-                        <button class="btn btn-success mt-2" onclick="exportShareCard()">⬇️ Сохранить картинку</button>
-                    </div>
-                </div>
-
-                <!-- ДОНАТЫ (НА ШАШЛЫЧОК) -->
-                <div id="module-donate" class="module">
-                    <h2>🥩 Поддержать Танк</h2>
-                    <div class="card flex-col gap-2 text-center">
-                        <p class="text-muted text-sm mb-2">Приложение 100% бесплатное. Поддержка — чисто на пиво, шашлык и сервера.</p>
-                        
-                        <div class="battery-bar" style="height: 20px;">
-                            <div class="battery-fill bg-success" style="width: 30%;"></div>
-                        </div>
-                        <p class="text-sm mt-1 mb-2 font-bold text-main">Цель: $30 / Собрано: $9</p>
-                        
-                        <div class="grid-2 gap-2">
-                            <button class="btn btn-outline" onclick="showDonateAddress('XMR')">Monero (XMR)</button>
-                            <button class="btn btn-outline" onclick="showDonateAddress('USDT')">USDT (TRC-20)</button>
-                            <button class="btn btn-outline" onclick="showDonateAddress('SOL')">Solana (SOL)</button>
-                            <button class="btn btn-outline" onclick="showDonateAddress('CARD')">Fiat (Ready/Kauri)</button>
-                        </div>
-                        
-                        <div id="donateDetails" class="mt-2 flex-col gap-2" style="display:none; padding: 15px; border: 1px solid var(--border); border-radius: 8px; background: #1a1a1a;">
-                            <h3 id="donateTitle" class="text-primary"></h3>
-                            <p id="donateAddress" class="text-sm font-bold" style="word-break: break-all; color: var(--main);"></p>
-                            <button class="btn btn-primary" onclick="copyDonateAddress()">📋 Копировать Адрес</button>
-                            <hr class="border-gray mt-2 mb-2">
-                            <p class="text-muted text-sm">После перевода нажми кнопку ниже, чтобы сгенерировать локальный Supporter Token (без привязки к личности).</p>
-                            <button class="btn btn-success" onclick="generateSupporterToken()">💎 Я задонатил (Получить Badge)</button>
-                        </div>
-                        
-                        <div id="supporterBadge" class="mt-2 text-success font-bold" style="display:none;">
-                            ✅ Токен активирован: <span id="supporterTokenVal" class="text-sm"></span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- НАСТРОЙКИ API -->
-                <div id="module-settings" class="module">
-                    <h2>⚙️ НАСТРОЙКИ & API</h2>
-                    
-                    <div class="card flex-col gap-2 mb-2">
-                        <h3>🛡 РЕЖИМ БЕЗОПАСНОСТИ</h3>
-                        <p class="text-muted text-sm">Выбери уровень маскировки и изоляции данных.</p>
-                        <select id="securityMode" class="p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onchange="changeSecurityMode()">
-                            <option value="civilian">Гражданский (Обычный ПИН)</option>
-                            <option value="cyberpunk">Киберпанк (Калькулятор + Стеганография)</option>
-                        </select>
-                    </div>
-
-                    <div class="card flex-col gap-2">
-                        <h3 class="text-success">🟢 ЗРЕНИЕ & АНАЛИЗ (Gemini)</h3>
-                        <input type="password" id="geminiKey" placeholder="Google AI Studio API Key (бесплатно)">
-                        <select id="geminiModel" class="mt-1 p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onfocus="fetchGeminiModels()">
-                            <option value="gemini-3.1-flash">Gemini 3.1 Flash ⭐</option>
-                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                        </select>
-                        <p class="text-muted text-xs mt-1">* Нажми на список моделей для автозагрузки доступных</p>
-                    </div>
-
-                    <div class="card flex-col gap-2 mt-2">
-                        <h3 class="text-primary">🔵 ИИ ТРЕНЕР (Любой провайдер)</h3>
-                        <p class="text-muted text-sm mb-2">Основной интеллект приложения. Отвечает на вопросы, планирует.</p>
-                        
-                        <label class="text-sm">Провайдер</label>
-                        <select id="trainerProvider" class="p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onchange="updateTrainerProviderUI()">
-                            <option value="groq">Groq (Бесплатно, быстро)</option>
-                            <option value="openrouter">OpenRouter</option>
-                            <option value="cerebras">Cerebras</option>
-                            <option value="deepseek">DeepSeek</option>
-                            <option value="claude">Anthropic Claude</option>
-                            <option value="custom">Свой (OpenAI-совместимый)</option>
-                        </select>
-                        
-                        <div id="customUrlBlock" style="display:none;" class="mt-2">
-                            <label class="text-sm">Base URL</label>
-                            <input type="text" id="trainerUrl" placeholder="https://api.openai.com/v1">
-                        </div>
-
-                        <label class="text-sm mt-2">API Ключ</label>
-                        <input type="password" id="trainerKey" placeholder="API Key">
-                        
-                        <label class="text-sm mt-2">Модель</label>
-                        <select id="trainerModelSelect" class="p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onfocus="fetchTrainerModels()">
-                            <option value="llama-3.1-70b-versatile">llama-3.1-70b-versatile</option>
-                        </select>
-                        <p class="text-muted text-xs mt-1">* Вставь ключ и нажми на список моделей для загрузки</p>
-                        
-                        <input type="text" id="trainerModelCustom" placeholder="Или впиши вручную..." class="mt-2" style="display:none;">
-
-                        <button class="btn btn-success mt-2" onclick="saveApiKeys()">СОХРАНИТЬ НАСТРОЙКИ</button>
-                    </div>
-
-                    <div class="card flex-col gap-2 mt-2">
-                        <h3>🔔 НАПОМИНАНИЯ (УВЕДОМЛЕНИЯ)</h3>
-                        <p class="text-muted text-sm">Включи пуш-уведомления для контроля воды, сна и фармакологии.</p>
-                        <button class="btn btn-primary" id="btnToggleReminders" onclick="toggleReminders()">🔔 Включить уведомления</button>
-                    </div>
-                </div>
-
-                <!-- ЭКСПОРТ -->
-                <div id="module-export" class="module">
-                    <h2>📄 Резервная копия</h2>
-                    <div class="card text-center">
-                        <p class="text-muted text-sm mb-2">Сохранение и загрузка всей БД в формате .tank (JSON-контейнер).</p>
-                        <button class="btn btn-success mt-2" onclick="exportTank()">⬇️ Скачать .tank</button>
-                        <hr class="border-gray">
-                        <input type="file" id="importTankInput" style="display:none;" onchange="importTank(event)">
-                        <button class="btn btn-outline mt-2" onclick="document.getElementById('importTankInput').click()">⬆️ Загрузить .tank</button>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-    <script src="qrcode.min.js"></script>
-    <script src="cyberpunk.js"></script>
-    <script src="cyberpunk_ai.js"></script>
-    <script src="app.js"></script>
-</body>
-</html>

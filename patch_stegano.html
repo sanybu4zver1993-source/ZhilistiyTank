@@ -1,0 +1,12 @@
+                <div id="module-stegano" class="module">
+                    <h2>🖼 Стеганография (.tank)</h2>
+                    <div class="card flex-col gap-2 text-center">
+                        <p class="text-muted text-sm mb-2">Зашифровать БД внутрь картинки (LSB). Работает как генератор, выдает PNG.</p>
+                        <button class="btn btn-primary" onclick="exportStegoBackup()">1. Скачать Стего-Бэкап (PNG)</button>
+                        
+                        <hr class="border-gray mt-2 mb-2">
+                        <p class="text-muted text-sm mb-2">Восстановить БД из стего-фотографии.</p>
+                        <input type="file" id="steganoDecodeInput" accept="image/png" style="display:none" onchange="importStegoBackup(event)">
+                        <button class="btn btn-outline text-success" onclick="document.getElementById('steganoDecodeInput').click()">2. 📥 Восстановить из PNG</button>
+                    </div>
+                </div>

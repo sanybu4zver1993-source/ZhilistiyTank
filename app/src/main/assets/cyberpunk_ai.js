@@ -1,7 +1,7 @@
 window.AIRouter = {
     fails: 0,
     quarantineUntil: 0,
-    cache: {}, // Simple in-memory hash cache
+    cache: {},
     
     hashString: function(str) {
         let hash = 0;
@@ -14,122 +14,153 @@ window.AIRouter = {
     },
 
     callAI: async function(provider, payload, options) {
-        // Circuit Breaker
-        if (Date.now() < this.quarantineUntil) {
-            throw new Error("Провайдер в карантине из-за ошибок.");
-        }
-
-        // Cache Check
         const cacheKey = this.hashString(JSON.stringify(payload));
         if (this.cache[cacheKey]) {
-            console.log("AI Router: Returning cached response");
-            return this.cache[cacheKey];
+            return { ...this.cache[cacheKey], source: 'cache' };
         }
 
+        const isQuarantined = Date.now() < this.quarantineUntil;
+        let primaryProv = provider === 'trainer' ? AppState.apiKeys.trainerProvider : provider;
+
+        let responseText = "";
+        let confidence = 1.0;
+        let source = primaryProv;
+        let success = false;
+        
         let retries = options.retries || 1;
         let temperature = options.temperature || 0.7;
 
-        while (retries >= 0) {
-            try {
-                let responseText = "";
-                let confidence = 1.0;
-                
-                if (provider === 'gemini_vision') {
-                    const key = AppState.apiKeys.gemini;
-                    const model = AppState.apiKeys.geminiModel || "gemini-3.1-flash";
-                    
-                    // Add generation config for JSON
-                    payload.generationConfig = {
-                        responseMimeType: "application/json",
-                        temperature: temperature
-                    };
-
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-                        method: "POST",
-                        headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify(payload)
-                    });
-
-                    if (!res.ok) throw new Error("API HTTP Error: " + res.status);
-                    
-                    const data = await res.json();
-                    if(data.candidates && data.candidates[0].content.parts[0].text) {
-                        responseText = data.candidates[0].content.parts[0].text;
-                        // Simulated confidence metric since Gemini Vision doesn't provide explicit confidence 0-1 for this directly
-                        confidence = 0.8; 
-                    } else {
-                        throw new Error("Invalid format from Gemini");
-                    }
-                } else if (provider === 'trainer') {
-                    const prov = AppState.apiKeys.trainerProvider;
-                    const key = AppState.apiKeys.trainerKey;
-                    const model = AppState.apiKeys.trainerModel;
-                    
-                    if(prov === 'groq' || prov === 'openai' || prov === 'custom') {
-                        let url = prov === 'groq' ? "https://api.groq.com/openai/v1/chat/completions" : 
-                                  prov === 'openai' ? "https://api.openai.com/v1/chat/completions" : 
-                                  AppState.apiKeys.trainerUrl;
+        if (!isQuarantined) {
+            while (retries >= 0 && !success) {
+                try {
+                    if (provider === 'gemini_vision') {
+                        const key = AppState.apiKeys.gemini;
+                        const model = AppState.apiKeys.geminiModel || "gemini-3.1-flash";
                         
-                        payload.model = model;
-                        payload.temperature = temperature;
-                        
-                        // Force JSON output if requested
-                        if (options.json) {
-                            payload.response_format = { type: "json_object" };
-                        }
-
-                        const res = await fetch(url, {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Authorization": `Bearer ${key}`
-                            },
-                            body: JSON.stringify(payload)
-                        });
-
-                        if (!res.ok) throw new Error("API HTTP Error: " + res.status);
-                        
-                        const data = await res.json();
-                        responseText = data.choices[0].message.content;
-                    } else if (prov === 'gemini') {
-                        // Trainer using Gemini Text
-                        payload.generationConfig = { temperature: temperature };
-                        if (options.json) payload.generationConfig.responseMimeType = "application/json";
+                        let p = JSON.parse(JSON.stringify(payload));
+                        p.generationConfig = { responseMimeType: "application/json", temperature: temperature };
 
                         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
                             method: "POST",
                             headers: {"Content-Type": "application/json"},
-                            body: JSON.stringify(payload)
+                            body: JSON.stringify(p)
                         });
 
                         if (!res.ok) throw new Error("API HTTP Error: " + res.status);
                         
                         const data = await res.json();
-                        responseText = data.candidates[0].content.parts[0].text;
+                        if(data.candidates && data.candidates[0].content.parts[0].text) {
+                            responseText = data.candidates[0].content.parts[0].text;
+                            confidence = 0.8; 
+                            success = true;
+                        } else {
+                            throw new Error("Invalid format");
+                        }
+                    } else if (provider === 'trainer') {
+                        responseText = await this._execTrainerRequest(primaryProv, payload, temperature, options.json);
+                        success = true;
                     }
-                }
-
-                this.fails = 0; // Reset fails on success
-                
-                const result = { text: responseText, confidence: confidence };
-                this.cache[cacheKey] = result; // Cache it
-                return result;
-
-            } catch (err) {
-                console.error("AI Router Error:", err);
-                retries--;
-                temperature = 0.0; // Fallback to 0.0 for retry determinism
-                
-                if (retries < 0) {
-                    this.fails++;
-                    if (this.fails >= 3) {
-                        this.quarantineUntil = Date.now() + 15 * 60 * 1000; // 15 mins
-                        showToast("⚠️ Превышен лимит ошибок. ИИ в карантине на 15м.");
+                } catch (err) {
+                    console.error("AI Router Error:", err);
+                    retries--;
+                    temperature = 0.0;
+                    if (retries < 0) {
+                        this.fails++;
+                        if (this.fails >= 3) {
+                            this.quarantineUntil = Date.now() + 15 * 60 * 1000;
+                            showToast("⚠️ ИИ в карантине на 15м. Включаю Fallback.");
+                        }
                     }
-                    throw err;
                 }
             }
         }
+
+        // Fallback Chain
+        if (!success) {
+            if (provider === 'trainer') {
+                try {
+                    if (primaryProv !== 'groq' && AppState.apiKeys.trainerKey) { 
+                        // Simplified: attempt groq fallback if it wasn't primary. Assuming they use one key or it's hard.
+                        // Actually, in a real app they'd need separate keys. Let's just fallback to offline to be safe and robust.
+                        throw new Error("Trigger offline");
+                    } else {
+                        throw new Error("Trigger offline");
+                    }
+                } catch (e) {
+                    source = 'offline';
+                    success = true;
+                    if (options.json) {
+                        responseText = JSON.stringify({ name: "Оффлайн оценка", kcal: 0, b: 0, f: 0, u: 0 });
+                    } else {
+                        responseText = "🤖 (Оффлайн Шаблон): Система временно недоступна. Ешь по норме, пей воду, спи 8 часов. ЦНС важнее.";
+                    }
+                }
+            } else if (provider === 'gemini_vision') {
+                source = 'offline';
+                success = true;
+                responseText = JSON.stringify({ name: "Ручной ввод (Оффлайн)", kcal: 0, b: 0, f: 0, u: 0 });
+                showToast("⚠️ Vision недоступен. Включен ручной ввод.");
+            }
+        }
+
+        if (success) {
+            this.fails = 0;
+            const result = { text: responseText, confidence: confidence, source: source };
+            if (source !== 'offline') this.cache[cacheKey] = result;
+            return result;
+        } else {
+            throw new Error("All fallbacks failed.");
+        }
+    },
+
+    _execTrainerRequest: async function(prov, origPayload, temperature, isJson) {
+        const key = AppState.apiKeys.trainerKey;
+        const model = AppState.apiKeys.trainerModel;
+        let payload = JSON.parse(JSON.stringify(origPayload));
+
+        if(prov === 'groq' || prov === 'openai' || prov === 'custom') {
+            let url = prov === 'groq' ? "https://api.groq.com/openai/v1/chat/completions" : 
+                      prov === 'openai' ? "https://api.openai.com/v1/chat/completions" : 
+                      AppState.apiKeys.trainerUrl;
+            
+            payload.model = model;
+            payload.temperature = temperature;
+            if (isJson) payload.response_format = { type: "json_object" };
+
+            const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${key}`
+                },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error("API Error");
+            const data = await res.json();
+            return data.choices[0].message.content;
+        } else if (prov === 'gemini') {
+            let geminiPayload = { contents: [] };
+            if (payload.messages) {
+                geminiPayload.contents = [{
+                    role: "user",
+                    parts: [{ text: payload.messages.map(m => `${m.role}: ${m.content}`).join("\n\n") }]
+                }];
+            } else {
+                geminiPayload = payload;
+            }
+            geminiPayload.generationConfig = { temperature: temperature };
+            if (isJson) geminiPayload.generationConfig.responseMimeType = "application/json";
+
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(geminiPayload)
+            });
+            if (!res.ok) throw new Error("API Error");
+            const data = await res.json();
+            return data.candidates[0].content.parts[0].text;
+        }
+        throw new Error("Unknown provider");
     }
 };
 
@@ -159,33 +190,34 @@ ${weeklyData}
             { role: "user", content: msg }
         ]
     };
-    
-    // Convert generic payload to Gemini format if needed
-    const prov = AppState.apiKeys.trainerProvider;
-    if (prov === 'gemini') {
-        payload = {
-            contents: [
-                { role: "user", parts: [{ text: systemPrompt + "\n\nUser: " + msg }] }
-            ]
-        };
-    }
 
     try {
         appendChatMessage("Тренер", "🤔 Думаю...");
         const res = await window.AIRouter.callAI('trainer', payload, { temperature: 0.7, json: false });
         removeLastMessage();
-        appendChatMessage("Тренер", res.text);
+        
+        let badge = "";
+        if (res.source === 'cache') badge = "📦 Из кэша";
+        else if (res.source === 'offline') badge = "📱 Оффлайн";
+        else if (res.source === 'gemini') badge = "⚡ Gemini";
+        else badge = "🔄 " + res.source;
+        
+        appendChatMessage("Тренер", res.text, badge);
     } catch (e) {
         removeLastMessage();
         appendChatMessage("Система", "❌ Ошибка связи с ИИ: " + e.message);
     }
 };
 
-function appendChatMessage(sender, text) {
+function appendChatMessage(sender, text, badge = null) {
     const hist = document.getElementById("chatHistory");
     const div = document.createElement("div");
     div.className = "p-2 " + (sender === "Вы" ? "text-right" : "text-left");
-    div.innerHTML = `<strong class="text-sm ${sender === "Вы" ? "text-primary" : "text-success"}">${sender}</strong><br><span style="white-space: pre-wrap;">${text}</span>`;
+    let inner = `<strong class="text-sm ${sender === "Вы" ? "text-primary" : "text-success"}">${sender}</strong><br><span style="white-space: pre-wrap;">${text}</span>`;
+    if (badge) {
+        inner += `<br><span class="text-muted" style="font-size: 10px;">${badge}</span>`;
+    }
+    div.innerHTML = inner;
     hist.appendChild(div);
     hist.scrollTop = hist.scrollHeight;
 }
@@ -195,14 +227,23 @@ function removeLastMessage() {
     if(hist.lastChild) hist.removeChild(hist.lastChild);
 }
 
-// Override Vision API call
-// Override Vision API call
+// Global tracking for user edit tracker
+if (!window.AppState) window.AppState = {};
+if (typeof AppState.foodEditErrors === 'undefined') AppState.foodEditErrors = 0;
+window.lastAiFoodPrediction = null;
+
 window.analyzeFoodImage = async (event) => {
     const file = event.target.files[0];
     if(!file) return;
 
     if(!AppState.apiKeys || !AppState.apiKeys.gemini) return showToast("Укажи Gemini API Key в Настройках!");
-    showToast("⏳ Анализирую (Ground Truth Verification)...");
+    
+    // Check if error tracker is high
+    if (AppState.foodEditErrors > 3) {
+        showToast("⚠️ Ранее ИИ часто ошибался. Внимательно проверь размер порции!");
+    } else {
+        showToast("⏳ Анализирую (Ground Truth Verification)...");
+    }
     
     const reader = new FileReader();
     reader.onload = async (e) => {
@@ -223,7 +264,6 @@ window.analyzeFoodImage = async (event) => {
             let txt = res.text.replace(/```json/g, "").replace(/```/g, "").trim();
             const parsed = JSON.parse(txt);
             
-            // Ground Truth Verification
             let warning = "";
             const truth = {
                 "гречка": { kcal: 343, b: 13, f: 3, u: 71 },
@@ -252,9 +292,17 @@ window.analyzeFoodImage = async (event) => {
             document.getElementById("foodF").value = parsed.f || 0;
             document.getElementById("foodU").value = parsed.u || 0;
             
-            showToast(`Распознано!${warning ? `\n${warning}` : ''}`);
+            window.lastAiFoodPrediction = parsed.kcal; // track for user edit calculation
+            
+            let badge = "";
+            if (res.source === 'cache') badge = "📦 Из кэша";
+            else if (res.source === 'offline') badge = "📱 Оффлайн";
+            else if (res.source === 'gemini_vision') badge = "⚡ Gemini";
+            else badge = "🔄 " + res.source;
+
+            document.getElementById("foodImageStatus").innerHTML = `<span class="text-success">Распознано!</span> <span class="text-muted" style="font-size: 10px;">${badge}</span>${warning ? `<br><span class="text-warning">${warning}</span>` : ''}`;
         } catch(err) {
-            showToast("❌ Ошибка: " + err.message);
+            document.getElementById("foodImageStatus").innerText = "❌ Ошибка: " + err.message;
         }
     };
     reader.readAsDataURL(file);
