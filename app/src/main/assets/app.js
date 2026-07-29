@@ -40,7 +40,9 @@ const AppState = {
     cnsTriggers: ["Дроны", "Новости", "Недосып", "Еда"],
     stressTriggers: ["Без стресса", "Был стресс"],
     activePots: { green: null, white: null },
-    customPotIngredients: {}
+    customPotIngredients: {},
+    potTare: { green: 0, white: 0 },
+    potRecipes: { green: null, white: null }
 };
 
 const suppLabels = {
@@ -90,6 +92,8 @@ const saveUIState = () => {
         store.put({ key: "events", value: AppState.events });
         store.put({ key: "activePots", value: AppState.activePots });
         store.put({ key: "customPotIngredients", value: AppState.customPotIngredients });
+        store.put({ key: "potTare", value: AppState.potTare });
+        store.put({ key: "potRecipes", value: AppState.potRecipes });
     } catch (e) {}
 };
 
@@ -112,6 +116,8 @@ const loadState = () => {
         store.get("apiKeys").onsuccess = (e) => { if (e.target.result) AppState.apiKeys = e.target.result.value; if(window.loadApiKeysUI) window.loadApiKeysUI(); };
         store.get("activePots").onsuccess = (e) => { if (e.target.result) AppState.activePots = e.target.result.value; };
         store.get("customPotIngredients").onsuccess = (e) => { if (e.target.result) AppState.customPotIngredients = e.target.result.value; };
+        store.get("potTare").onsuccess = (e) => { if (e.target.result) AppState.potTare = e.target.result.value; };
+        store.get("potRecipes").onsuccess = (e) => { if (e.target.result) AppState.potRecipes = e.target.result.value; };
         store.get("cnsTriggers").onsuccess = (e) => { if (e.target.result) AppState.cnsTriggers = e.target.result.value; };
         store.get("stressTriggers").onsuccess = (e) => { if (e.target.result) AppState.stressTriggers = e.target.result.value; };
         store.get("dossier").onsuccess = (e) => { if (e.target.result) AppState.dossier = e.target.result.value; };

@@ -472,9 +472,15 @@ window.renderPotBuilder = () => {
     const ingredients = getPotIngredients();
     const sortedKeys = Object.keys(ingredients).sort();
     
+    // Ensure tare is initialized
+    if (!AppState.potTare) AppState.potTare = { green: 0, white: 0 };
+    if (!AppState.potRecipes) AppState.potRecipes = { green: null, white: null };
+    
     let html = `
-        <h4 class="${currentPotType === 'green' ? 'text-success' : 'text-warning'} mb-2 text-center">
-            ${currentPotType === 'green' ? '🟢 Зеленая (3л) Мясная' : '🌼 Белая (2л) Молочная'} — Новая Варка
+        <h4 class="${currentPotType === 'green' ? 'text-success' : 'text-warning'} mb-2 text-center flex align-center justify-center gap-2">
+            ${currentPotType === 'green' ? '🟢 Зеленая (3л)' : '🌼 Белая (2л)'} — Новая Варка
+            <button class="btn btn-outline text-xs" style="padding: 2px 5px;" onclick="loadPotRecipe('${currentPotType}')">📥 Загрузить</button>
+            <button class="btn btn-outline text-xs" style="padding: 2px 5px;" onclick="savePotRecipe('${currentPotType}')">💾 Сохр</button>
         </h4>
         <div id="potRowsContainer" class="flex-col gap-2 mb-2">
     `;
@@ -487,7 +493,7 @@ window.renderPotBuilder = () => {
                     <option value="" disabled ${!row.ingredientKey ? 'selected' : ''}>Выбери...</option>
                     ${options}
                 </select>
-                <input type="number" class="input" style="flex: 1" placeholder="Грамм" value="${row.grams}" oninput="updatePotRow(${row.id}, 'grams', this.value)">
+                <input type="number" class="input" style="flex: 1" placeholder="Сырой вес (г)" value="${row.grams}" oninput="updatePotRow(${row.id}, 'grams', this.value)">
                 <button class="btn btn-danger text-sm" style="width:auto; padding: 0 10px;" onclick="removePotRow(${row.id})">✖</button>
             </div>
         `;
@@ -495,14 +501,84 @@ window.renderPotBuilder = () => {
     
     html += `
         </div>
-        <div class="grid-2 gap-2 mt-2">
+        <div class="grid-2 gap-2 mt-2 mb-2">
             <button class="btn btn-outline text-sm" onclick="addPotRow()">+ Ингредиент</button>
             <button class="btn btn-outline text-sm" onclick="openCustomIngredientModal()">⚙️ Свой Продукт</button>
         </div>
+        
+        <div class="card" style="background: #2a2a2a; border: 1px dashed gray; padding: 10px;">
+            <p class="text-sm font-bold text-center mb-1">⚖️ Взвешивание готовой кастрюли</p>
+            <div class="grid-2 gap-2 mb-2">
+                <div class="input-group">
+                    <label class="text-xs">Вес пустой тары (г)</label>
+                    <input type="number" id="potTareWeight" class="input" value="${AppState.potTare[currentPotType] || 0}" oninput="updatePotTare('${currentPotType}', this.value)">
+                </div>
+                <div class="input-group">
+                    <label class="text-xs">Вес с едой (г)</label>
+                    <div class="flex gap-1">
+                        <input type="number" id="potGrossWeight" class="input" placeholder="Напр. 2500" style="flex: 1">
+                        <button class="btn btn-outline" style="width: auto; padding: 0 10px;" onclick="applyTareToGross()">- Тара</button>
+                    </div>
+                </div>
+            </div>
+            <div class="input-group">
+                <label class="text-xs text-primary">Итоговый ЧИСТЫЙ вес готовой еды (г)</label>
+                <input type="number" id="potNetWeight" class="input" placeholder="Вес без тары">
+            </div>
+        </div>
+        
         <button class="btn btn-primary w-100 mt-2" onclick="calcPot()">🔥 Сварить Кастрюлю (Сохранить)</button>
     `;
     
     container.innerHTML = html;
+};
+
+window.updatePotTare = (type, val) => {
+    const v = parseInt(val);
+    if (!isNaN(v) && v >= 0) {
+        if (!AppState.potTare) AppState.potTare = { green: 0, white: 0 };
+        AppState.potTare[type] = v;
+        saveUIState();
+    }
+};
+
+window.applyTareToGross = () => {
+    const gross = parseFloat(document.getElementById("potGrossWeight").value);
+    const tare = AppState.potTare[currentPotType] || 0;
+    if (!isNaN(gross) && gross > 0) {
+        const net = gross - tare;
+        if (net > 0) {
+            document.getElementById("potNetWeight").value = net;
+            showToast("Тара вычтена!");
+        } else {
+            showToast("Вес с едой должен быть больше тары!");
+        }
+    } else {
+        showToast("Укажи вес кастрюли с едой!");
+    }
+};
+
+window.savePotRecipe = (type) => {
+    if (!AppState.potRecipes) AppState.potRecipes = { green: null, white: null };
+    const validRows = currentPotRows.filter(r => r.ingredientKey && r.grams);
+    if (validRows.length === 0) return showToast("Нет ингредиентов для сохранения!");
+    
+    AppState.potRecipes[type] = validRows.map(r => ({ k: r.ingredientKey, g: r.grams }));
+    saveUIState();
+    showToast("💾 Рецепт сохранен!");
+};
+
+window.loadPotRecipe = (type) => {
+    if (!AppState.potRecipes || !AppState.potRecipes[type] || AppState.potRecipes[type].length === 0) {
+        return showToast("Нет сохраненного рецепта!");
+    }
+    
+    currentPotRows = [];
+    potRowCounter = 0;
+    AppState.potRecipes[type].forEach(r => {
+        addPotRow(r.k, r.g);
+    });
+    showToast("📥 Рецепт загружен!");
 };
 
 window.openCustomIngredientModal = () => {
@@ -525,7 +601,7 @@ window.openCustomIngredientModal = () => {
 };
 
 window.calcPot = () => {
-    let b = 0, f = 0, u = 0, k = 0, weight = 0;
+    let b = 0, f = 0, u = 0, k = 0, rawWeight = 0;
     const ingredients = getPotIngredients();
     
     currentPotRows.forEach(row => {
@@ -538,29 +614,38 @@ window.calcPot = () => {
                     f += (data.f * g / 100);
                     u += (data.u * g / 100);
                     k += (data.k * g / 100);
-                    weight += g;
+                    rawWeight += g;
                 }
             }
         }
     });
 
-    if (weight === 0) {
+    if (rawWeight === 0) {
         return showToast("Введи вес ингредиентов!");
+    }
+    
+    let finalWeight = rawWeight;
+    const netInput = document.getElementById("potNetWeight");
+    if (netInput && netInput.value) {
+        const parsedNet = parseFloat(netInput.value);
+        if (!isNaN(parsedNet) && parsedNet > 0) {
+            finalWeight = parsedNet;
+        }
     }
 
     const mainIng = currentPotRows[0] && currentPotRows[0].ingredientKey ? currentPotRows[0].ingredientKey : 'Кастрюля';
     const name = `${currentPotType === 'green' ? 'Мясная' : 'Молочная'} (${mainIng.charAt(0).toUpperCase() + mainIng.slice(1)})`;
 
-    // Calculate per 100g
-    const k100 = (k / weight) * 100;
-    const b100 = (b / weight) * 100;
-    const f100 = (f / weight) * 100;
-    const u100 = (u / weight) * 100;
+    // Calculate per 100g based on final cooked weight
+    const k100 = (k / finalWeight) * 100;
+    const b100 = (b / finalWeight) * 100;
+    const f100 = (f / finalWeight) * 100;
+    const u100 = (u / finalWeight) * 100;
 
     const potData = {
         name,
-        totalWeight: Math.round(weight),
-        remainingWeight: Math.round(weight),
+        totalWeight: Math.round(finalWeight),
+        remainingWeight: Math.round(finalWeight),
         k100, b100, f100, u100
     };
 
@@ -568,10 +653,9 @@ window.calcPot = () => {
     AppState.activePots[currentPotType] = potData;
     saveUIState();
     
-    showToast("✅ Кастрюля сварена и сохранена!");
+    showToast(`✅ Кастрюля сварена! Вес: ${Math.round(finalWeight)}г`);
     renderActivePot(currentPotType);
 };
-
 window.eatActivePotGrams = (type) => {
     const pot = AppState.activePots[type];
     if (!pot) return;
@@ -590,20 +674,26 @@ window.eatActivePotGrams = (type) => {
     
     const label = `${pot.name} [${eaten}г]`;
 
-    document.getElementById("foodName").value = label;
-    document.getElementById("foodB").value = b;
-    document.getElementById("foodF").value = f;
-    document.getElementById("foodU").value = u;
-    document.getElementById("foodKcal").value = k;
+    // Write directly to daily totals
+    AppState.food.totalB += b;
+    AppState.food.totalF += f;
+    AppState.food.totalU += u;
+    AppState.food.totalKcal += k;
+    if (window.updateFoodUI) window.updateFoodUI();
+    
+    // Log event to Event Store
+    if (window.logEvent) {
+        window.logEvent("food", { name: label, B: b, F: f, U: u, Kcal: k, type: "batch_portion_eaten" });
+    }
     
     // Deduct from remaining
     pot.remainingWeight -= eaten;
     if (pot.remainingWeight <= 0) {
         AppState.activePots[type] = null;
-        showToast("🍲 Кастрюля пуста! Порция загружена.");
+        showToast(`✅ Съедено ${eaten}г! Кастрюля пуста и удалена.`);
         document.getElementById("potCalculator").style.display = "none";
     } else {
-        showToast(`🍲 Порция ${eaten}г загружена! Осталось ${pot.remainingWeight} г.`);
+        showToast(`✅ Съедено ${eaten}г! Добавлено в дневник. Осталось ${pot.remainingWeight} г.`);
         renderActivePot(type);
     }
     
