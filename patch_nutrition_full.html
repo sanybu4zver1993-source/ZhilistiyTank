@@ -1,0 +1,52 @@
+                <!-- СМАРТ БЖУ (HYBRID) -->
+                <div id="module-nutrition" class="module">
+                    <h2>🍗 Гибридный ввод БЖУ</h2>
+                    <div class="card flex-col gap-2">
+                        <div class="flex gap-2">
+                            <textarea id="smartFoodInput" rows="2" placeholder="Напр: 150г каши, 2 яйца" style="flex: 1" oninput="autoParseFood()"></textarea>
+                            <button class="btn btn-primary" style="width: auto; padding: 0 15px;" id="btnVoiceFood" onclick="startVoiceFood()">🎤</button>
+                            <button class="btn btn-success" style="width: auto; padding: 0 15px;" onclick="document.getElementById('foodVisionInput').click()">📷</button>
+                            <input type="file" id="foodVisionInput" accept="image/*" style="display:none" onchange="analyzeFoodImage(event)">
+                        </div>
+                        
+                        <div class="grid-2 gap-2 mt-2">
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Каша с бананом', 12, 3, 75, 400)">Каша с бананом</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Творог', 36, 10, 5, 250)">Творог</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Жареная печень', 35, 12, 10, 290)">Жареная печень</button>
+                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Яйца', 26, 22, 2, 310)">Яйца</button>
+                        </div>
+                        
+                        <hr class="border-gray mt-2 mb-2">
+                        <p class="text-sm font-bold text-center">🫕 МЕГА-ВАРКА (Режим Кастрюли)</p>
+                        <div class="grid-2 gap-2 mt-2">
+                            <button class="btn btn-outline text-sm" style="border-color: #2ecc71; color: #2ecc71;" onclick="openPotModal('green')">🟢 Зеленая (3л)</button>
+                            <button class="btn btn-outline text-sm" style="border-color: #f1c40f; color: #f1c40f;" onclick="openPotModal('white')">🌼 Белая (2л)</button>
+                        </div>
+                        <div id="potCalculator" class="card mt-2" style="display:none; background: #1a1a1a; padding: 10px;"></div>
+                        <hr class="border-gray mt-2 mb-2">
+
+                        <div class="grid-2 gap-2 mt-2">
+                            <div class="input-group"><label>Название</label><input type="text" id="foodName" placeholder="Блюдо"></div>
+                            <div class="input-group"><label>Ккал</label><input type="number" id="foodKcal" placeholder="0"></div>
+                        </div>
+                        <div class="grid-3 gap-2 mt-2">
+                            <div class="input-group"><label>Б (г)</label><input type="number" id="foodB" placeholder="0"></div>
+                            <div class="input-group"><label>Ж (г)</label><input type="number" id="foodF" placeholder="0"></div>
+                            <div class="input-group"><label>У (г)</label><input type="number" id="foodU" placeholder="0"></div>
+                        </div>
+                        
+                        <div id="foodImageStatus" class="text-sm mt-2 font-bold"></div>
+                        
+                        <button class="btn btn-success mt-2" onclick="saveHybridFood()">✅ Записать в итог</button>
+                    </div>
+
+                    <div class="card mt-2 text-center">
+                        <h3>Съедено за день:</h3>
+                        <p id="foodTotalKcal" class="text-primary font-bold" style="font-size: 1.5rem">0 ккал</p>
+                        <div class="grid-3 gap-1 mt-2">
+                            <div class="p-2 border-gray"><div class="text-sm text-muted">Белки</div><div id="foodTotalB" class="font-bold">0г</div></div>
+                            <div class="p-2 border-gray"><div class="text-sm text-muted">Жиры</div><div id="foodTotalF" class="font-bold">0г</div></div>
+                            <div class="p-2 border-gray"><div class="text-sm text-muted">Углеводы</div><div id="foodTotalU" class="font-bold">0г</div></div>
+                        </div>
+                    </div>
+                </div>
