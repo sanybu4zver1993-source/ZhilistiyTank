@@ -399,6 +399,40 @@ window.openPotModal = (type) => {
     const container = document.getElementById("potCalculator");
     container.style.display = "block";
     
+    if (AppState.activePots && AppState.activePots[type]) {
+        renderActivePot(type);
+    } else {
+        startNewPot(type);
+    }
+};
+
+window.renderActivePot = (type) => {
+    const container = document.getElementById("potCalculator");
+    const pot = AppState.activePots[type];
+    
+    let html = `
+        <h4 class="${type === 'green' ? 'text-success' : 'text-warning'} mb-2 text-center">
+            ${type === 'green' ? '🟢 Зеленая (3л)' : '🌼 Белая (2л)'} — Активная!
+        </h4>
+        <div class="card" style="background: #222; border: 1px solid ${type === 'green' ? '#2ecc71' : '#f1c40f'};">
+            <p class="font-bold mb-1">${pot.name}</p>
+            <p class="text-sm mb-1">Осталось: <span class="text-primary font-bold" style="font-size: 1.1rem">${pot.remainingWeight}</span> г (из ${pot.totalWeight} г)</p>
+            <p class="text-xs text-muted mb-2">На 100г: ${Math.round(pot.k100)} ккал | Б:${pot.b100.toFixed(1)} Ж:${pot.f100.toFixed(1)} У:${pot.u100.toFixed(1)}</p>
+            
+            <hr class="border-gray mt-2 mb-2">
+            <p class="text-xs mb-2 font-bold">Сколько грамм ты сейчас съел?</p>
+            <div class="flex gap-2">
+                <input type="number" id="eatenPotGramsActive" class="input" placeholder="Напр. 300" style="flex:1">
+                <button class="btn btn-primary" style="width: auto;" onclick="eatActivePotGrams('${type}')">Съесть</button>
+            </div>
+            
+            <button class="btn btn-outline btn-danger mt-2 w-100 text-sm" onclick="startNewPot('${type}')">🗑 Сбросить и сварить новую</button>
+        </div>
+    `;
+    container.innerHTML = html;
+};
+
+window.startNewPot = (type) => {
     currentPotRows = [];
     potRowCounter = 0;
     
@@ -440,7 +474,7 @@ window.renderPotBuilder = () => {
     
     let html = `
         <h4 class="${currentPotType === 'green' ? 'text-success' : 'text-warning'} mb-2 text-center">
-            ${currentPotType === 'green' ? '🟢 Зеленая (3л) Мясная' : '🌼 Белая (2л) Молочная'}
+            ${currentPotType === 'green' ? '🟢 Зеленая (3л) Мясная' : '🌼 Белая (2л) Молочная'} — Новая Варка
         </h4>
         <div id="potRowsContainer" class="flex-col gap-2 mb-2">
     `;
@@ -465,19 +499,10 @@ window.renderPotBuilder = () => {
             <button class="btn btn-outline text-sm" onclick="addPotRow()">+ Ингредиент</button>
             <button class="btn btn-outline text-sm" onclick="openCustomIngredientModal()">⚙️ Свой Продукт</button>
         </div>
-        <button class="btn btn-primary w-100 mt-2" onclick="calcPot()">🔥 Рассчитать Кастрюлю</button>
-        <div id="potResult" class="mt-2 text-center" style="display:none; border: 1px dashed var(--primary); padding: 10px; border-radius: 8px;"></div>
+        <button class="btn btn-primary w-100 mt-2" onclick="calcPot()">🔥 Сварить Кастрюлю (Сохранить)</button>
     `;
     
-    const oldResultObj = document.getElementById("potResult");
-    const oldResult = oldResultObj ? oldResultObj.innerHTML : "";
-    
     container.innerHTML = html;
-    
-    if (oldResult && document.getElementById("potResult")) {
-        document.getElementById("potResult").innerHTML = oldResult;
-        document.getElementById("potResult").style.display = currentPotTotals ? "block" : "none";
-    }
 };
 
 window.openCustomIngredientModal = () => {
@@ -524,44 +549,46 @@ window.calcPot = () => {
     }
 
     const mainIng = currentPotRows[0] && currentPotRows[0].ingredientKey ? currentPotRows[0].ingredientKey : 'Кастрюля';
-    const name = `${currentPotType === 'green' ? 'Мясная' : 'Молочная'} (${mainIng})`;
+    const name = `${currentPotType === 'green' ? 'Мясная' : 'Молочная'} (${mainIng.charAt(0).toUpperCase() + mainIng.slice(1)})`;
 
-    currentPotTotals = { 
-        name, 
-        weight: Math.round(weight),
-        b: Math.round(b), 
-        f: Math.round(f), 
-        u: Math.round(u), 
-        k: Math.round(k) 
+    // Calculate per 100g
+    const k100 = (k / weight) * 100;
+    const b100 = (b / weight) * 100;
+    const f100 = (f / weight) * 100;
+    const u100 = (u / weight) * 100;
+
+    const potData = {
+        name,
+        totalWeight: Math.round(weight),
+        remainingWeight: Math.round(weight),
+        k100, b100, f100, u100
     };
 
-    const resDiv = document.getElementById("potResult");
-    resDiv.style.display = "block";
-    resDiv.innerHTML = `
-        <p class="text-success font-bold mb-1">ИТОГО В КАСТРЮЛЕ:</p>
-        <p class="text-sm mb-2 font-bold">${currentPotTotals.weight} г | ${currentPotTotals.k} ккал<br>Б:${currentPotTotals.b} Ж:${currentPotTotals.f} У:${currentPotTotals.u}</p>
-        <hr class="border-gray mt-2 mb-2">
-        <p class="text-xs text-muted mb-2">Сколько грамм ты сейчас съел?</p>
-        <div class="flex gap-2">
-            <input type="number" id="eatenPotGrams" class="input" placeholder="Напр. 400" style="flex:1">
-            <button class="btn btn-outline" style="width: auto;" onclick="eatPotGrams()">ОК</button>
-        </div>
-    `;
+    if (!AppState.activePots) AppState.activePots = { green: null, white: null };
+    AppState.activePots[currentPotType] = potData;
+    saveUIState();
+    
+    showToast("✅ Кастрюля сварена и сохранена!");
+    renderActivePot(currentPotType);
 };
 
-window.eatPotGrams = () => {
-    if(!currentPotTotals) return;
-    const eatenGrams = parseFloat(document.getElementById('eatenPotGrams').value);
+window.eatActivePotGrams = (type) => {
+    const pot = AppState.activePots[type];
+    if (!pot) return;
     
-    if(isNaN(eatenGrams) || eatenGrams <= 0) return showToast("Укажи сколько грамм съел!");
+    const input = document.getElementById('eatenPotGramsActive');
+    const eaten = parseFloat(input.value);
     
-    const fraction = eatenGrams / currentPotTotals.weight;
+    if (isNaN(eaten) || eaten <= 0) return showToast("Укажи сколько съел!");
+    if (eaten > pot.remainingWeight) return showToast(`В кастрюле осталось только ${pot.remainingWeight} г!`);
     
-    const b = Math.round(currentPotTotals.b * fraction);
-    const f = Math.round(currentPotTotals.f * fraction);
-    const u = Math.round(currentPotTotals.u * fraction);
-    const k = Math.round(currentPotTotals.k * fraction);
-    const label = `${currentPotTotals.name} [${eatenGrams}г]`;
+    // Calculate macros for eaten portion
+    const k = Math.round((pot.k100 * eaten) / 100);
+    const b = Math.round((pot.b100 * eaten) / 100);
+    const f = Math.round((pot.f100 * eaten) / 100);
+    const u = Math.round((pot.u100 * eaten) / 100);
+    
+    const label = `${pot.name} [${eaten}г]`;
 
     document.getElementById("foodName").value = label;
     document.getElementById("foodB").value = b;
@@ -569,6 +596,16 @@ window.eatPotGrams = () => {
     document.getElementById("foodU").value = u;
     document.getElementById("foodKcal").value = k;
     
-    showToast(`🍲 Порция ${eatenGrams}г загружена! Нажми 'Записать в итог'.`);
-    document.getElementById("potCalculator").style.display = "none";
+    // Deduct from remaining
+    pot.remainingWeight -= eaten;
+    if (pot.remainingWeight <= 0) {
+        AppState.activePots[type] = null;
+        showToast("🍲 Кастрюля пуста! Порция загружена.");
+        document.getElementById("potCalculator").style.display = "none";
+    } else {
+        showToast(`🍲 Порция ${eaten}г загружена! Осталось ${pot.remainingWeight} г.`);
+        renderActivePot(type);
+    }
+    
+    saveUIState();
 };

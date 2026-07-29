@@ -1,23 +1,7 @@
-        tx.oncomplete = () => {
-            if (activeDBName === "VeinyTankDB_Fake" && AppState.water === 0 && (!AppState.sleepLogs || AppState.sleepLogs.length === 0)) {
-                // Populate Fake DB with realistic noise
-                AppState.water = 1500;
-                AppState.bodyBattery = 85;
-                const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-                AppState.sleepLogs = [{
-                    start: "23:00",
-                    end: "07:00",
-                    hrs: 8,
-                    date: yesterday
-                }];
-                AppState.food = { totalB: 120, totalF: 60, totalU: 200, totalKcal: 1820 };
-                AppState.events = [
-                    { type: "water", payload: { ml: 500 }, occurred_at: yesterday },
-                    { type: "water", payload: { ml: 1000 }, occurred_at: new Date().toISOString() }
-                ];
-                saveUIState();
-                updateFoodUI();
-                syncWaterFromNative();
-                if(window.calculateRecoveryScore) window.calculateRecoveryScore(); else updateBodyBatteryUI();
-            }
-        };
+        store.get("apiKeys").onsuccess = (e) => { if (e.target.result) AppState.apiKeys = e.target.result.value; if(window.loadApiKeysUI) window.loadApiKeysUI(); };
+        store.get("activePots").onsuccess = (e) => { if (e.target.result) AppState.activePots = e.target.result.value; };
+        store.get("customPotIngredients").onsuccess = (e) => { if (e.target.result) AppState.customPotIngredients = e.target.result.value; };
+        store.get("cnsTriggers").onsuccess = (e) => { if (e.target.result) AppState.cnsTriggers = e.target.result.value; };
+        store.get("stressTriggers").onsuccess = (e) => { if (e.target.result) AppState.stressTriggers = e.target.result.value; };
+        store.get("dossier").onsuccess = (e) => { if (e.target.result) AppState.dossier = e.target.result.value; };
+        store.get("events").onsuccess = (e) => { if (e.target.result) AppState.events = e.target.result.value; if(window.renderEvents) window.renderEvents(); };
