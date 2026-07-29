@@ -7,6 +7,29 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <!-- LOGIN OVERLAY -->
+    <div id="loginOverlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:var(--bg-color); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:white; padding: 20px; box-sizing: border-box;">
+        <h2 id="loginTitle" style="color:var(--primary); margin-bottom: 20px;">ВХОД В ТАНК</h2>
+        <div style="font-size: 32px; letter-spacing: 10px; margin-bottom: 20px; height: 40px; display: flex; gap: 10px;" id="pinDots">
+            <span>○</span><span>○</span><span>○</span><span>○</span>
+        </div>
+        <p id="loginMessage" class="text-muted text-sm mb-2 text-center" style="min-height: 40px;"></p>
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 15px; max-width: 300px; width: 100%;">
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(1)">1</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(2)">2</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(3)">3</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(4)">4</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(5)">5</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(6)">6</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(7)">7</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(8)">8</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(9)">9</button>
+            <button class="btn btn-danger" style="font-size:24px; padding: 15px;" onclick="clearPin()">C</button>
+            <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(0)">0</button>
+            <button class="btn btn-primary" style="font-size:24px; padding: 15px;" onclick="submitPin()">→</button>
+        </div>
+    </div>
+
     <div class="app-container">
         <header>
             <h1>Жилистый Танк v4.0 🦾</h1>
@@ -28,7 +51,9 @@
                 <button class="nav-btn" onclick="showModule('insights')">🧠 Инсайты</button>
                 <button class="nav-btn" onclick="showModule('guide')">📚 Справочник</button>
                 <button class="nav-btn" onclick="showModule('share')">🥷 Анон. Карточка</button>
+                <button class="nav-btn" onclick="showModule('donate')">🥩 Шашлычок</button>
                 <button class="nav-btn" onclick="showModule('stegano')">🖼 Стеганография</button>
+                <button class="nav-btn" onclick="showModule('settings')">⚙️ API Ключи</button>
                 <button class="nav-btn" onclick="showModule('qr')">📲 QR-Обмен</button>
                 <button class="nav-btn bg-danger" onclick="showModule('sos')">🆘 SOS Протоколы</button>
                 <button class="nav-btn" onclick="showModule('export')">📄 Резерв (.tank)</button>
@@ -65,6 +90,8 @@
                         <div class="flex gap-2">
                             <textarea id="smartFoodInput" rows="2" placeholder="Напр: 150г каши, 2 яйца" style="flex: 1" oninput="autoParseFood()"></textarea>
                             <button class="btn btn-primary" style="width: auto; padding: 0 15px;" id="btnVoiceFood" onclick="startVoiceFood()">🎤</button>
+                            <button class="btn btn-success" style="width: auto; padding: 0 15px;" onclick="document.getElementById('foodVisionInput').click()">📷</button>
+                            <input type="file" id="foodVisionInput" accept="image/*" style="display:none" onchange="analyzeFoodImage(event)">
                         </div>
                         
                         <div class="grid-3 gap-2 mt-2">
@@ -134,6 +161,30 @@
                         </div>
                         <button class="btn btn-primary mt-2" onclick="saveSleep()">Зафиксировать сон</button>
                         <div id="sleepStatus" class="mt-2 text-center text-sm border-gray" style="padding-top: 8px;"></div>
+                    </div>
+                    
+                    <div class="card flex-col gap-2 mt-2">
+                        <div class="flex" style="justify-content: space-between; align-items: center;">
+                            <h3>🔴 ЦНС / НАСТРОЕНИЕ (Триггеры)</h3>
+                            <button class="btn btn-outline text-sm" id="editCnsBtn" onclick="toggleEditCns()">✏️ Редакт.</button>
+                        </div>
+                        <div id="cnsTriggersContainer" class="flex gap-2 mt-2" style="flex-wrap: wrap;"></div>
+                        <div id="addCnsBlock" style="display:none;" class="mt-2 flex gap-2">
+                            <input type="text" id="newCnsInput" placeholder="Новый триггер..." style="flex:1;">
+                            <button class="btn btn-primary" style="width: auto;" onclick="addCnsTrigger()">+</button>
+                        </div>
+                    </div>
+
+                    <div class="card flex-col gap-2 mt-2">
+                        <div class="flex" style="justify-content: space-between; align-items: center;">
+                            <h3>⚡ СТРЕСС</h3>
+                            <button class="btn btn-outline text-sm" id="editStressBtn" onclick="toggleEditStress()">✏️ Редакт.</button>
+                        </div>
+                        <div id="stressTriggersContainer" class="flex gap-2 mt-2" style="flex-wrap: wrap;"></div>
+                        <div id="addStressBlock" style="display:none;" class="mt-2 flex gap-2">
+                            <input type="text" id="newStressInput" placeholder="Новый триггер..." style="flex:1;">
+                            <button class="btn btn-primary" style="width: auto;" onclick="addStressTrigger()">+</button>
+                        </div>
                     </div>
                 </div>
 
@@ -313,6 +364,93 @@
                         </div>
 
                         <button class="btn btn-success mt-2" onclick="exportShareCard()">⬇️ Сохранить картинку</button>
+                    </div>
+                </div>
+
+                <!-- ДОНАТЫ (НА ШАШЛЫЧОК) -->
+                <div id="module-donate" class="module">
+                    <h2>🥩 Поддержать Танк</h2>
+                    <div class="card flex-col gap-2 text-center">
+                        <p class="text-muted text-sm mb-2">Приложение 100% бесплатное. Поддержка — чисто на пиво, шашлык и сервера.</p>
+                        
+                        <div class="battery-bar" style="height: 20px;">
+                            <div class="battery-fill bg-success" style="width: 30%;"></div>
+                        </div>
+                        <p class="text-sm mt-1 mb-2 font-bold text-main">Цель: $30 / Собрано: $9</p>
+                        
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-outline" onclick="showDonateAddress('XMR')">Monero (XMR)</button>
+                            <button class="btn btn-outline" onclick="showDonateAddress('USDT')">USDT (TRC-20)</button>
+                            <button class="btn btn-outline" onclick="showDonateAddress('SOL')">Solana (SOL)</button>
+                            <button class="btn btn-outline" onclick="showDonateAddress('CARD')">Fiat (Ready/Kauri)</button>
+                        </div>
+                        
+                        <div id="donateDetails" class="mt-2 flex-col gap-2" style="display:none; padding: 15px; border: 1px solid var(--border); border-radius: 8px; background: #1a1a1a;">
+                            <h3 id="donateTitle" class="text-primary"></h3>
+                            <p id="donateAddress" class="text-sm font-bold" style="word-break: break-all; color: var(--main);"></p>
+                            <button class="btn btn-primary" onclick="copyDonateAddress()">📋 Копировать Адрес</button>
+                            <hr class="border-gray mt-2 mb-2">
+                            <p class="text-muted text-sm">После перевода нажми кнопку ниже, чтобы сгенерировать локальный Supporter Token (без привязки к личности).</p>
+                            <button class="btn btn-success" onclick="generateSupporterToken()">💎 Я задонатил (Получить Badge)</button>
+                        </div>
+                        
+                        <div id="supporterBadge" class="mt-2 text-success font-bold" style="display:none;">
+                            ✅ Токен активирован: <span id="supporterTokenVal" class="text-sm"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- НАСТРОЙКИ API -->
+                <div id="module-settings" class="module">
+                    <h2>⚙️ API & Нейросети</h2>
+                    
+                    <div class="card flex-col gap-2">
+                        <h3 class="text-success">🟢 ЗРЕНИЕ & АНАЛИЗ (Gemini)</h3>
+                        <input type="password" id="geminiKey" placeholder="Google AI Studio API Key (бесплатно)">
+                        <select id="geminiModel" class="mt-1 p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onfocus="fetchGeminiModels()">
+                            <option value="gemini-3.1-flash">Gemini 3.1 Flash ⭐</option>
+                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                        </select>
+                        <p class="text-muted text-xs mt-1">* Нажми на список моделей для автозагрузки доступных</p>
+                    </div>
+
+                    <div class="card flex-col gap-2 mt-2">
+                        <h3 class="text-primary">🔵 ИИ ТРЕНЕР (Любой провайдер)</h3>
+                        <p class="text-muted text-sm mb-2">Основной интеллект приложения. Отвечает на вопросы, планирует.</p>
+                        
+                        <label class="text-sm">Провайдер</label>
+                        <select id="trainerProvider" class="p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onchange="updateTrainerProviderUI()">
+                            <option value="groq">Groq (Бесплатно, быстро)</option>
+                            <option value="openrouter">OpenRouter</option>
+                            <option value="cerebras">Cerebras</option>
+                            <option value="deepseek">DeepSeek</option>
+                            <option value="claude">Anthropic Claude</option>
+                            <option value="custom">Свой (OpenAI-совместимый)</option>
+                        </select>
+                        
+                        <div id="customUrlBlock" style="display:none;" class="mt-2">
+                            <label class="text-sm">Base URL</label>
+                            <input type="text" id="trainerUrl" placeholder="https://api.openai.com/v1">
+                        </div>
+
+                        <label class="text-sm mt-2">API Ключ</label>
+                        <input type="password" id="trainerKey" placeholder="API Key">
+                        
+                        <label class="text-sm mt-2">Модель</label>
+                        <select id="trainerModelSelect" class="p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onfocus="fetchTrainerModels()">
+                            <option value="llama-3.1-70b-versatile">llama-3.1-70b-versatile</option>
+                        </select>
+                        <p class="text-muted text-xs mt-1">* Вставь ключ и нажми на список моделей для загрузки</p>
+                        
+                        <input type="text" id="trainerModelCustom" placeholder="Или впиши вручную..." class="mt-2" style="display:none;">
+
+                        <button class="btn btn-success mt-2" onclick="saveApiKeys()">СОХРАНИТЬ НАСТРОЙКИ</button>
+                    </div>
+
+                    <div class="card flex-col gap-2 mt-2">
+                        <h3>🔔 НАПОМИНАНИЯ (УВЕДОМЛЕНИЯ)</h3>
+                        <p class="text-muted text-sm">Включи пуш-уведомления для контроля воды, сна и фармакологии.</p>
+                        <button class="btn btn-primary" id="btnToggleReminders" onclick="toggleReminders()">🔔 Включить уведомления</button>
                     </div>
                 </div>
 

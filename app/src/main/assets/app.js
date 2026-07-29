@@ -35,7 +35,10 @@ const AppState = {
     sleepLogs: [],
     bodyBattery: 85,
     logs: [],
-    lastResetDate: new Date().toISOString().slice(0,10)
+    lastResetDate: new Date().toISOString().slice(0,10),
+    apiKeys: { gemini: "", geminiModel: "gemini-3.1-flash", groq: "", groqModel: "llama-3.1-70b-versatile", customUrl: "", customKey: "", customModel: "" },
+    cnsTriggers: ["Дроны", "Новости", "Недосып", "Еда"],
+    stressTriggers: ["Без стресса", "Был стресс"]
 };
 
 const suppLabels = {
@@ -50,9 +53,11 @@ const suppLabels = {
 };
 
 let db = null;
+let activeDBName = "VeinyTankDB"; // Default, overridden by PIN
+
 const initDB = () => {
     return new Promise((resolve, reject) => {
-        const req = window.indexedDB.open("VeinyTankDB", 4);
+        const req = window.indexedDB.open(activeDBName, 4);
         req.onerror = () => reject("DB Error");
         req.onsuccess = (e) => { db = e.target.result; resolve(); loadState(); };
         req.onupgradeneeded = (e) => {
@@ -76,6 +81,9 @@ const saveUIState = () => {
         store.put({ key: "sleepLogs", value: AppState.sleepLogs });
         store.put({ key: "bodyBattery", value: AppState.bodyBattery });
         store.put({ key: "caffeineDoses", value: AppState.caffeineDoses });
+        store.put({ key: "apiKeys", value: AppState.apiKeys });
+        store.put({ key: "cnsTriggers", value: AppState.cnsTriggers });
+        store.put({ key: "stressTriggers", value: AppState.stressTriggers });
     } catch (e) {}
 };
 
@@ -91,6 +99,9 @@ const loadState = () => {
         store.get("sleepLogs").onsuccess = (e) => { if (e.target.result) AppState.sleepLogs = e.target.result.value; };
         store.get("bodyBattery").onsuccess = (e) => { if (e.target.result) AppState.bodyBattery = e.target.result.value; updateBodyBatteryUI(); updateWorkoutUI(); };
         store.get("caffeineDoses").onsuccess = (e) => { if (e.target.result) AppState.caffeineDoses = e.target.result.value; updateCaffeineUI(); };
+        store.get("apiKeys").onsuccess = (e) => { if (e.target.result) AppState.apiKeys = e.target.result.value; if(window.loadApiKeysUI) window.loadApiKeysUI(); };
+        store.get("cnsTriggers").onsuccess = (e) => { if (e.target.result) AppState.cnsTriggers = e.target.result.value; if(window.renderTriggers) window.renderTriggers(); };
+        store.get("stressTriggers").onsuccess = (e) => { if (e.target.result) AppState.stressTriggers = e.target.result.value; if(window.renderTriggers) window.renderTriggers(); };
         
         store.get("supps").onsuccess = (e) => { 
             if (e.target.result) {
@@ -928,5 +939,447 @@ window.exportShareCard = () => {
 
 // Init
 document.addEventListener("DOMContentLoaded", () => {
-    initDB().catch(console.error);
+    // Check if pins are set up
+    const realPin = localStorage.getItem("tank_real_pin");
+    const fakePin = localStorage.getItem("tank_fake_pin");
+    
+    if (!realPin || !fakePin) {
+        document.getElementById("loginTitle").innerText = "SETUP REAL PIN";
+        document.getElementById("loginMessage").innerText = "Создай основной ПИН-код (настоящие данные)";
+    }
 });
+
+// ==========================================
+// 11. DURESS PIN & LOGIN VAULT
+// ==========================================
+let currentPinInput = "";
+let setupStep = 0; // 0 = login, 1 = setup real, 2 = setup fake
+
+window.enterPin = (num) => {
+    if (currentPinInput.length < 4) {
+        currentPinInput += num;
+        updatePinDots();
+    }
+};
+
+window.clearPin = () => {
+    currentPinInput = "";
+    updatePinDots();
+};
+
+function updatePinDots() {
+    const dots = document.getElementById("pinDots").children;
+    for (let i = 0; i < 4; i++) {
+        dots[i].innerText = i < currentPinInput.length ? "●" : "○";
+    }
+}
+
+window.submitPin = () => {
+    if (currentPinInput.length !== 4) return showToast("Введите 4 цифры");
+    
+    const realPin = localStorage.getItem("tank_real_pin");
+    const fakePin = localStorage.getItem("tank_fake_pin");
+    
+    if (!realPin || !fakePin) {
+        if (setupStep === 0) { setupStep = 1; }
+        if (setupStep === 1) {
+            localStorage.setItem("tank_real_pin", currentPinInput);
+            document.getElementById("loginTitle").innerText = "SETUP FAKE PIN";
+            document.getElementById("loginMessage").innerText = "Создай тревожный ПИН-код (чистая база)";
+            setupStep = 2;
+            window.clearPin();
+            return;
+        } else if (setupStep === 2) {
+            if (currentPinInput === localStorage.getItem("tank_real_pin")) {
+                return showToast("Тревожный ПИН не может совпадать с основным!");
+            }
+            localStorage.setItem("tank_fake_pin", currentPinInput);
+            setupStep = 0;
+            document.getElementById("loginTitle").innerText = "ВХОД В ТАНК";
+            document.getElementById("loginMessage").innerText = "Настройка завершена. Введите ПИН.";
+            window.clearPin();
+            return;
+        }
+    }
+    
+    // Login logic
+    if (currentPinInput === realPin) {
+        activeDBName = "VeinyTankDB";
+        document.getElementById("loginOverlay").style.display = "none";
+        initDB().catch(console.error);
+    } else if (currentPinInput === fakePin) {
+        activeDBName = "VeinyTankDB_Fake";
+        document.getElementById("loginOverlay").style.display = "none";
+        initDB().catch(console.error);
+    } else {
+        showToast("Неверный ПИН-код!");
+        window.clearPin();
+    }
+};
+
+// ==========================================
+// 12. DONATION GATEWAY
+// ==========================================
+const donateAddrs = {
+    'XMR': '48xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', // example
+    'USDT': 'TXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    'SOL': '8Nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    'CARD': 'https://pay.kauri.finance/...'
+};
+
+window.showDonateAddress = (coin) => {
+    document.getElementById("donateDetails").style.display = "flex";
+    document.getElementById("donateTitle").innerText = `Кошелек ${coin}`;
+    document.getElementById("donateAddress").innerText = donateAddrs[coin] || "N/A";
+};
+
+window.copyDonateAddress = () => {
+    const text = document.getElementById("donateAddress").innerText;
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(() => showToast("Скопировано!"));
+    } else {
+        showToast("Скопировано: " + text); // fallback
+    }
+};
+
+window.generateSupporterToken = () => {
+    // Generate a random local hash token
+    const token = "TANK-" + Math.random().toString(36).substring(2, 10).toUpperCase() + "-" + Date.now().toString(36).toUpperCase();
+    localStorage.setItem("supporter_token", token);
+    
+    document.getElementById("supporterBadge").style.display = "block";
+    document.getElementById("supporterTokenVal").innerText = token;
+    showToast("Спасибо за поддержку! Токен активирован.");
+};
+
+// If token exists on load, show it in the donate module
+document.addEventListener("DOMContentLoaded", () => {
+    const token = localStorage.getItem("supporter_token");
+    if(token) {
+        document.getElementById("supporterBadge").style.display = "block";
+        document.getElementById("supporterTokenVal").innerText = token;
+    }
+});
+
+
+// ==========================================
+// 13. API KEYS & SETTINGS
+// ==========================================
+window.saveApiKeys = () => {
+    AppState.apiKeys = {
+        gemini: document.getElementById("geminiKey").value,
+        geminiModel: document.getElementById("geminiModel").value,
+        trainerProvider: document.getElementById("trainerProvider").value,
+        trainerUrl: document.getElementById("trainerUrl").value,
+        trainerKey: document.getElementById("trainerKey").value,
+        trainerModel: document.getElementById("trainerModelCustom").style.display !== "none" ? 
+                      document.getElementById("trainerModelCustom").value : 
+                      document.getElementById("trainerModelSelect").value
+    };
+    saveUIState();
+    showToast("Настройки нейросетей сохранены!");
+};
+
+window.loadApiKeysUI = () => {
+    if(!AppState.apiKeys) AppState.apiKeys = { gemini: "", geminiModel: "gemini-3.1-flash", trainerProvider: "groq", trainerUrl: "", trainerKey: "", trainerModel: "llama-3.1-70b-versatile" };
+    document.getElementById("geminiKey").value = AppState.apiKeys.gemini || "";
+    document.getElementById("geminiModel").value = AppState.apiKeys.geminiModel || "gemini-3.1-flash";
+    
+    const tp = document.getElementById("trainerProvider");
+    if(tp) {
+        tp.value = AppState.apiKeys.trainerProvider || "groq";
+        updateTrainerProviderUI();
+    }
+    
+    document.getElementById("trainerUrl").value = AppState.apiKeys.trainerUrl || "";
+    document.getElementById("trainerKey").value = AppState.apiKeys.trainerKey || "";
+    
+    const tms = document.getElementById("trainerModelSelect");
+    const tmc = document.getElementById("trainerModelCustom");
+    
+    // Attempt to set select, if it fails or it's custom, show custom
+    let optionFound = Array.from(tms.options).some(o => o.value === AppState.apiKeys.trainerModel);
+    if (optionFound) {
+        tms.value = AppState.apiKeys.trainerModel;
+        tms.style.display = "block";
+        tmc.style.display = "none";
+    } else {
+        tmc.value = AppState.apiKeys.trainerModel || "";
+        tmc.style.display = "block";
+        tms.style.display = "none";
+    }
+};
+
+window.updateTrainerProviderUI = () => {
+    const prov = document.getElementById("trainerProvider").value;
+    const urlBlock = document.getElementById("customUrlBlock");
+    if(prov === "custom") {
+        urlBlock.style.display = "block";
+        document.getElementById("trainerModelCustom").style.display = "block";
+        document.getElementById("trainerModelSelect").style.display = "none";
+    } else {
+        urlBlock.style.display = "none";
+        document.getElementById("trainerModelCustom").style.display = "none";
+        document.getElementById("trainerModelSelect").style.display = "block";
+    }
+};
+
+window.fetchGeminiModels = async () => {
+    const key = document.getElementById("geminiKey").value;
+    if(!key) return showToast("Сначала введите ключ Gemini!");
+    showToast("Загрузка моделей Gemini...");
+    try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+        const data = await res.json();
+        if(data.models) {
+            const select = document.getElementById("geminiModel");
+            select.innerHTML = "";
+            data.models.filter(m => m.name.includes('gemini')).forEach(m => {
+                const opt = document.createElement("option");
+                const val = m.name.replace("models/", "");
+                opt.value = val;
+                opt.innerText = val;
+                select.appendChild(opt);
+            });
+            select.value = AppState.apiKeys.geminiModel || "gemini-3.1-flash";
+            showToast("Модели Gemini обновлены!");
+        }
+    } catch (e) {
+        showToast("Ошибка загрузки моделей");
+    }
+};
+
+window.fetchTrainerModels = async () => {
+    const prov = document.getElementById("trainerProvider").value;
+    if(prov === "custom") return; // manual entry
+    
+    const key = document.getElementById("trainerKey").value;
+    if(!key) return showToast("Сначала введите ключ провайдера!");
+    
+    let url = "";
+    if(prov === "groq") url = "https://api.groq.com/openai/v1/models";
+    else if(prov === "openrouter") url = "https://openrouter.ai/api/v1/models";
+    else if(prov === "deepseek") url = "https://api.deepseek.com/models";
+    else if(prov === "cerebras") url = "https://api.cerebras.ai/v1/models"; // speculative standard endpoint
+    else if(prov === "claude") {
+        // Claude doesn't have a standard /models endpoint in exactly the same way without specific headers sometimes, 
+        // but we can just fallback to manual or hardcoded.
+        showToast("Для Claude впишите модель вручную (напр. claude-3-opus-20240229)");
+        document.getElementById("trainerModelCustom").style.display = "block";
+        document.getElementById("trainerModelSelect").style.display = "none";
+        return;
+    }
+    
+    showToast(`Загрузка моделей ${prov}...`);
+    try {
+        const headers = { "Authorization": `Bearer ${key}` };
+        const res = await fetch(url, { headers });
+        const data = await res.json();
+        
+        const models = data.data || data.models || data; // handle different structures
+        if(Array.isArray(models)) {
+            const select = document.getElementById("trainerModelSelect");
+            select.innerHTML = "";
+            models.forEach(m => {
+                const opt = document.createElement("option");
+                opt.value = m.id || m.name || m;
+                opt.innerText = m.id || m.name || m;
+                select.appendChild(opt);
+            });
+            showToast(`Модели ${prov} обновлены!`);
+        } else {
+            throw new Error("Неверный формат");
+        }
+    } catch (e) {
+        showToast("Ошибка загрузки. Впишите вручную.");
+        document.getElementById("trainerModelCustom").style.display = "block";
+        document.getElementById("trainerModelSelect").style.display = "none";
+    }
+};
+
+// ==========================================
+// 14. EDITABLE TRIGGERS (CNS / STRESS)
+// ==========================================
+let isEditingCns = false;
+let isEditingStress = false;
+
+window.renderTriggers = () => {
+    if(!AppState.cnsTriggers) AppState.cnsTriggers = ["Дроны", "Новости", "Недосып", "Еда"];
+    if(!AppState.stressTriggers) AppState.stressTriggers = ["Без стресса", "Был стресс"];
+
+    const cnsCont = document.getElementById("cnsTriggersContainer");
+    if(cnsCont) {
+        cnsCont.innerHTML = "";
+        AppState.cnsTriggers.forEach((t, i) => {
+            const btn = document.createElement("button");
+            btn.className = "btn btn-outline text-sm flex gap-2 align-center";
+            btn.innerHTML = `${t} ${isEditingCns ? '<span style="color:var(--danger)" onclick="event.stopPropagation(); removeCns('+i+')">✖</span>' : ''}`;
+            cnsCont.appendChild(btn);
+        });
+    }
+
+    const stressCont = document.getElementById("stressTriggersContainer");
+    if(stressCont) {
+        stressCont.innerHTML = "";
+        AppState.stressTriggers.forEach((t, i) => {
+            const btn = document.createElement("button");
+            btn.className = "btn btn-outline text-sm flex gap-2 align-center";
+            btn.innerHTML = `${t} ${isEditingStress ? '<span style="color:var(--danger)" onclick="event.stopPropagation(); removeStress('+i+')">✖</span>' : ''}`;
+            stressCont.appendChild(btn);
+        });
+    }
+    
+    const addCns = document.getElementById("addCnsBlock");
+    if(addCns) addCns.style.display = isEditingCns ? "flex" : "none";
+    
+    const addStr = document.getElementById("addStressBlock");
+    if(addStr) addStr.style.display = isEditingStress ? "flex" : "none";
+    
+    const editCns = document.getElementById("editCnsBtn");
+    if(editCns) editCns.innerText = isEditingCns ? "✅ Готово" : "✏️ Редакт.";
+    
+    const editStr = document.getElementById("editStressBtn");
+    if(editStr) editStr.innerText = isEditingStress ? "✅ Готово" : "✏️ Редакт.";
+};
+
+window.toggleEditCns = () => { isEditingCns = !isEditingCns; renderTriggers(); };
+window.toggleEditStress = () => { isEditingStress = !isEditingStress; renderTriggers(); };
+
+window.addCnsTrigger = () => {
+    const val = document.getElementById("newCnsInput").value.trim();
+    if(val) { AppState.cnsTriggers.push(val); document.getElementById("newCnsInput").value = ""; saveUIState(); renderTriggers(); }
+};
+window.removeCns = (i) => { AppState.cnsTriggers.splice(i, 1); saveUIState(); renderTriggers(); };
+
+window.addStressTrigger = () => {
+    const val = document.getElementById("newStressInput").value.trim();
+    if(val) { AppState.stressTriggers.push(val); document.getElementById("newStressInput").value = ""; saveUIState(); renderTriggers(); }
+};
+window.removeStress = (i) => { AppState.stressTriggers.splice(i, 1); saveUIState(); renderTriggers(); };
+
+// Initial render call wrapper
+document.addEventListener("DOMContentLoaded", () => {
+    setTimeout(() => {
+        if(window.renderTriggers) window.renderTriggers();
+        if(window.loadApiKeysUI) window.loadApiKeysUI();
+    }, 500);
+});
+
+
+// ==========================================
+// 15. VISION API (GEMINI) FOR FOOD
+// ==========================================
+window.analyzeFoodImage = async (event) => {
+    const file = event.target.files[0];
+    if(!file) return;
+    
+    if(!AppState.apiKeys || !AppState.apiKeys.gemini) {
+        showToast("Сначала укажи ключ Gemini API в Настройках!");
+        return;
+    }
+    
+    const key = AppState.apiKeys.gemini;
+    const model = AppState.apiKeys.geminiModel || "gemini-3.1-flash";
+    
+    showToast("Анализирую еду через Gemini...");
+    
+    try {
+        // Read file as base64
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+            const base64data = reader.result.split(',')[1];
+            
+            const prompt = "Ты эксперт-диетолог. Проанализируй это фото еды. Ответь СТРОГО в формате JSON без markdown и лишнего текста: {\"name\": \"название блюда\", \"kcal\": число, \"b\": число, \"f\": число, \"u\": число}. Рассчитай калории и БЖУ максимально точно на основе стандартных данных. Если не можешь определить точно, дай обоснованную оценку.";
+            
+            const payload = {
+                contents: [{
+                    parts: [
+                        {text: prompt},
+                        {inline_data: { mime_type: file.type, data: base64data }}
+                    ]
+                }]
+            };
+            
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload)
+            });
+            
+            const data = await res.json();
+            if(data.candidates && data.candidates[0].content.parts[0].text) {
+                let txt = data.candidates[0].content.parts[0].text;
+                txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
+                
+                try {
+                    const parsed = JSON.parse(txt);
+                    document.getElementById("foodName").value = parsed.name || "Еда с фото";
+                    document.getElementById("foodKcal").value = parsed.kcal || 0;
+                    document.getElementById("foodB").value = parsed.b || 0;
+                    document.getElementById("foodF").value = parsed.f || 0;
+                    document.getElementById("foodU").value = parsed.u || 0;
+                    showToast("Распознано! Можешь отредактировать и нажать 'Записать в итог'.");
+                } catch(e) {
+                    showToast("Ошибка парсинга JSON от Gemini. Попробуй еще раз.");
+                    console.error("Raw response:", txt);
+                }
+            } else {
+                showToast("Ошибка ответа от API");
+            }
+        };
+        reader.readAsDataURL(file);
+    } catch(e) {
+        showToast("Ошибка загрузки фото");
+    }
+};
+
+// ==========================================
+// 16. REMINDERS SYSTEM
+// ==========================================
+let remindersInterval = null;
+
+window.toggleReminders = () => {
+    const btn = document.getElementById("btnToggleReminders");
+    if(remindersInterval) {
+        clearInterval(remindersInterval);
+        remindersInterval = null;
+        btn.innerText = "🔔 Включить уведомления";
+        btn.className = "btn btn-primary";
+        showToast("Уведомления выключены.");
+    } else {
+        if ("Notification" in window) {
+            Notification.requestPermission().then(permission => {
+                if (permission === "granted") {
+                    startRemindersLoop();
+                    btn.innerText = "🔕 Выключить уведомления";
+                    btn.className = "btn btn-outline border-danger text-danger";
+                    showToast("Уведомления активированы!");
+                } else {
+                    showToast("Нет разрешения на уведомления.");
+                }
+            });
+        } else {
+            showToast("Уведомления не поддерживаются в браузере.");
+        }
+    }
+};
+
+function startRemindersLoop() {
+    remindersInterval = setInterval(() => {
+        const now = new Date();
+        const h = now.getHours();
+        
+        // Reminder every 2 hours during day for water
+        if (h >= 8 && h <= 22 && now.getMinutes() === 0) {
+            if(AppState.water < 3000) {
+                new Notification("💧 Танк, выпей воды!", { body: `Выпито: ${AppState.water}/3000 мл` });
+            }
+        }
+        
+        // Reminder for Sleep / Meds at 22:00
+        if (h === 22 && now.getMinutes() === 0) {
+            new Notification("💊 Вечерняя Фарма", { body: "Выпей Гавискон и Магний глицинат. Готовься ко сну." });
+        }
+    }, 60000); // Check every minute
+}
+
