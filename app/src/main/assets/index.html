@@ -6,8 +6,17 @@
     <title>Жилистый Танк</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+    <link rel="manifest" href="manifest.json">
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').then(reg => {
+                    console.log('SW registered!', reg);
+                }).catch(err => console.log('SW failed', err));
+            });
+        }
+    </script>
 </head>
-<body>
     <!-- LOGIN OVERLAY -->
     <div id="loginOverlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:var(--bg-color); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:white; padding: 20px; box-sizing: border-box;">
         
@@ -367,3 +376,37 @@
                             <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Жареная печень', 35, 12, 10, 290)">Жареная печень</button>
                             <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Яйца', 26, 22, 2, 310)">Яйца</button>
                         </div>
+                    </div>
+                    
+                    <div class="card flex-col gap-2 mt-2">
+                        <h3>💊 Ежедневный Стек</h3>
+                        <p class="text-muted text-sm mb-2">Отмечай прием БАДов. Остатки обновляются автоматически.</p>
+                        <div id="suppsContainer" class="flex-col gap-2">
+                            <!-- JS render -->
+                        </div>
+                        <button class="btn btn-outline text-sm mt-2" onclick="openSuppsInventoryModal()">⚙️ Настроить остатки банок</button>
+                    </div>
+                </div>
+
+                <!-- API KEYS -->
+                <div id="module-settings" class="module">
+                    <h2>⚙️ Настройки API</h2>
+                    <div class="card flex-col gap-2">
+                        <div class="input-group">
+                            <label>Gemini API Key</label>
+                            <input type="password" id="geminiKey" class="input">
+                        </div>
+                        <button class="btn btn-primary" onclick="saveSettings()">Сохранить настройки</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Scripts -->
+    <script src="qrcode.min.js"></script>
+    <script src="app.js"></script>
+    <script src="cyberpunk.js"></script>
+    <script src="cyberpunk_ai.js"></script>
+</body>
+</html>

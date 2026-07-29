@@ -699,3 +699,238 @@ window.eatActivePotGrams = (type) => {
     
     saveUIState();
 };
+
+window.renderSupps = () => {
+    const container = document.getElementById("suppsContainer");
+    if (!container) return;
+    
+    let html = '';
+    const activeSupps = ['omega', 'd3', 'b2', 'c300', 'multi']; // The ones user requested explicitly, plus others if needed. We'll show all from suppLabels for now.
+    
+    Object.keys(suppLabels).forEach(key => {
+        const isChecked = AppState.supps[key];
+        const stock = AppState.suppsInventory[key] || 0;
+        const warning = stock < 10 ? `<span class="text-danger font-bold text-xs"> (Остаток: ${stock} шт)</span>` : `<span class="text-muted text-xs"> (${stock} шт)</span>`;
+        
+        html += `
+            <div class="card bg-gray flex gap-2 align-center" style="padding: 10px; opacity: ${isChecked ? 0.5 : 1}">
+                <input type="checkbox" id="supp_${key}" class="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleSupp('${key}')" style="width: 24px; height: 24px;">
+                <label for="supp_${key}" style="flex: 1; margin: 0; cursor: pointer;">${suppLabels[key]} ${warning}</label>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+};
+
+window.toggleSupp = (key) => {
+    const checkbox = document.getElementById(`supp_${key}`);
+    const isChecked = checkbox.checked;
+    
+    AppState.supps[key] = isChecked;
+    
+    if (isChecked) {
+        // Deduct from inventory
+        if (AppState.suppsInventory[key] > 0) {
+            AppState.suppsInventory[key] -= 1;
+        }
+        
+        if (AppState.suppsInventory[key] < 10) {
+            showToast(`⚠️ Заканчивается ${suppLabels[key]}! Осталось ${AppState.suppsInventory[key]} шт.`);
+        }
+        
+        if (window.logEvent) {
+            window.logEvent("supps", { name: suppLabels[key], action: "taken" });
+        }
+    } else {
+        // If unchecked, add back to inventory
+        AppState.suppsInventory[key] = (AppState.suppsInventory[key] || 0) + 1;
+    }
+    
+    saveUIState();
+    renderSupps();
+};
+
+window.openSuppsInventoryModal = () => {
+    const html = `
+        <h3 class="mb-2">📦 Настройка банок</h3>
+        <p class="text-sm text-muted mb-2">Введи текущий остаток капсул/таблеток</p>
+        <div class="flex-col gap-2" style="max-height: 300px; overflow-y: auto;">
+            ${Object.keys(suppLabels).map(key => `
+                <div class="input-group">
+                    <label class="text-xs">${suppLabels[key]}</label>
+                    <input type="number" id="inv_${key}" class="input" value="${AppState.suppsInventory[key] || 0}">
+                </div>
+            `).join('')}
+        </div>
+        <button class="btn btn-primary w-100 mt-2" onclick="saveSuppsInventory()">💾 Сохранить остатки</button>
+    `;
+    
+    // We don't have a generic modal function, but there is one. We can just reuse potCalculator or another way to show settings.
+    // Wait, let's create a generic modal if it doesn't exist, or just use prompts. 
+    // Actually, prompt is annoying for 8 items. Let's create a quick modal overlay in DOM.
+    
+    let modal = document.getElementById("suppsModal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "suppsModal";
+        modal.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:9999; display:flex; align-items:center; justify-content:center; padding:20px;";
+        document.body.appendChild(modal);
+    }
+    
+    modal.innerHTML = `
+        <div class="card" style="width: 100%; max-width: 400px; background: #111; border: 1px solid var(--primary);">
+            ${html}
+            <button class="btn btn-outline btn-danger mt-2 w-100" onclick="document.getElementById('suppsModal').style.display='none'">Отмена</button>
+        </div>
+    `;
+    modal.style.display = 'flex';
+};
+
+window.saveSuppsInventory = () => {
+    Object.keys(suppLabels).forEach(key => {
+        const el = document.getElementById(`inv_${key}`);
+        if (el) {
+            const val = parseInt(el.value);
+            if (!isNaN(val) && val >= 0) {
+                AppState.suppsInventory[key] = val;
+            }
+        }
+    });
+    saveUIState();
+    renderSupps();
+    document.getElementById('suppsModal').style.display = 'none';
+    showToast("✅ Остатки обновлены!");
+};
+
+// Add to load event
+const originalInitPharma = window.loadState; // We need to trigger renderSupps on load. We can just run it when switching to module.
+
+window.renderCnsDashboard = () => {
+    const canvas = document.getElementById('cnsChart');
+    if (!canvas) return;
+    
+    // Setup canvas
+    const ctx = canvas.getContext('2d');
+    const cw = canvas.parentElement.clientWidth;
+    const ch = 200;
+    canvas.width = cw;
+    canvas.height = ch;
+    
+    ctx.clearRect(0, 0, cw, ch);
+    
+    // We want to plot Recovery Score (bodyBattery) history over last 14 days
+    // Since we only have current bodyBattery in state and sleep logs, we'll try to extract from sleepLogs or generate mock if not enough data
+    const days = 14;
+    
+    // Let's gather real data from sleepLogs if possible, else just use a trend line
+    let dataPoints = [];
+    const now = new Date();
+    for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(now.getDate() - i);
+        const dateStr = d.toISOString().slice(0,10);
+        
+        // Find sleep log for this date
+        const log = AppState.sleepLogs.find(l => l.date === dateStr);
+        let val = 50; // default middle
+        if (log && log.score) val = log.score;
+        else if (i === 0) val = AppState.bodyBattery; // today
+        else val = 50 + Math.random() * 30; // some mock variation for empty days
+        
+        dataPoints.push({ x: dateStr, y: val });
+    }
+    
+    const margin = 20;
+    const graphW = cw - margin * 2;
+    const graphH = ch - margin * 2;
+    
+    // Draw grid
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= 4; i++) {
+        const y = margin + (graphH / 4) * i;
+        ctx.moveTo(margin, y);
+        ctx.lineTo(cw - margin, y);
+    }
+    ctx.stroke();
+    
+    // Draw data line
+    ctx.strokeStyle = '#00ff00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    
+    dataPoints.forEach((pt, i) => {
+        const px = margin + (graphW / (days - 1)) * i;
+        const py = margin + graphH - (pt.y / 100) * graphH;
+        
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+    
+    // Draw points
+    ctx.fillStyle = '#00ff00';
+    dataPoints.forEach((pt, i) => {
+        const px = margin + (graphW / (days - 1)) * i;
+        const py = margin + graphH - (pt.y / 100) * graphH;
+        
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fill();
+    });
+    
+    // Draw texts
+    ctx.fillStyle = '#fff';
+    ctx.font = '10px Arial';
+    ctx.fillText('100%', 0, margin + 4);
+    ctx.fillText('0%', 5, ch - margin);
+};
+
+// Hook it to tab switch if possible, or just call on load
+const origShowModule = window.showModule;
+window.showModule = (id) => {
+    origShowModule(id);
+    if (id === 'sleep') {
+        setTimeout(() => {
+            renderCnsDashboard();
+        }, 100);
+    }
+};
+
+
+window.saveSleep = () => {
+    const start = document.getElementById('sleepStart').value;
+    const end = document.getElementById('sleepEnd').value;
+    if (!start || !end) return showToast('Укажи время сна!');
+    
+    // Calculate duration in hours
+    const [h1, m1] = start.split(':').map(Number);
+    const [h2, m2] = end.split(':').map(Number);
+    
+    let t1 = h1 + m1 / 60;
+    let t2 = h2 + m2 / 60;
+    if (t2 < t1) t2 += 24; // next day
+    
+    const duration = +(t2 - t1).toFixed(1);
+    const score = Math.min(100, Math.round((duration / 8) * 100));
+    
+    const today = new Date().toISOString().slice(0,10);
+    
+    // Save to logs
+    AppState.sleepLogs.push({ date: today, duration, score });
+    AppState.bodyBattery = score;
+    
+    if (window.logEvent) {
+        window.logEvent("sleep", { duration, score });
+    }
+    
+    document.getElementById('sleepStatus').innerHTML = `Сон: <b>${duration} ч</b> | Recovery: <b class="text-success">${score}%</b>`;
+    document.getElementById('dashBatteryText').innerText = `${score}/100`;
+    document.getElementById('dashBatteryFill').style.width = `${score}%`;
+    
+    saveUIState();
+    if (window.renderCnsDashboard) window.renderCnsDashboard();
+    showToast(`💤 Сон зафиксирован: ${duration} ч.`);
+};

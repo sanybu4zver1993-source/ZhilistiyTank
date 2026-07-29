@@ -1,0 +1,19 @@
+                        <div id="caffeineWarning" class="text-danger text-center font-bold text-sm mt-2" style="display:none;">
+                            Внимание! Высокий уровень кофеина. Активируй 15-мин NSDR перед сном!
+                        </div>
+                        
+                        <div class="grid-2 gap-2 mt-2">
+                            <button class="btn btn-outline" onclick="addCaffeine(50)">+50 мг (Чай)</button>
+                            <button class="btn btn-outline" onclick="addCaffeine(100)">+100 мг (Кофе)</button>
+                        </div>
+                    </div>
+                    
+                    <div class="card flex-col gap-2 mt-2">
+                        <h3>💊 Ежедневный Стек</h3>
+                        <p class="text-muted text-sm mb-2">Отмечай прием БАДов. Остатки обновляются автоматически.</p>
+                        <div id="suppsContainer" class="flex-col gap-2">
+                            <!-- JS render -->
+                        </div>
+                        <button class="btn btn-outline text-sm mt-2" onclick="openSuppsInventoryModal()">⚙️ Настроить остатки банок</button>
+                    </div>
+                </div>
