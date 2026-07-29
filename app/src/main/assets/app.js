@@ -99,7 +99,11 @@ const loadState = () => {
         store.get("water").onsuccess = (e) => { if (e.target.result) AppState.water = e.target.result.value; syncWaterFromNative(); };
         store.get("workoutDays").onsuccess = (e) => { if (e.target.result) AppState.workoutDays = e.target.result.value; renderHeatmap(); };
         store.get("sleepLogs").onsuccess = (e) => { if (e.target.result) AppState.sleepLogs = e.target.result.value; };
-        store.get("bodyBattery").onsuccess = (e) => { if (e.target.result) AppState.bodyBattery = e.target.result.value; updateBodyBatteryUI(); updateWorkoutUI(); };
+        store.get("bodyBattery").onsuccess = (e) => { 
+            if (e.target.result) AppState.bodyBattery = e.target.result.value; 
+            if(window.calculateRecoveryScore) window.calculateRecoveryScore(); else updateBodyBatteryUI(); 
+            updateWorkoutUI(); 
+        };
         store.get("caffeineDoses").onsuccess = (e) => { if (e.target.result) AppState.caffeineDoses = e.target.result.value; updateCaffeineUI(); };
         store.get("apiKeys").onsuccess = (e) => { if (e.target.result) AppState.apiKeys = e.target.result.value; if(window.loadApiKeysUI) window.loadApiKeysUI(); };
         store.get("cnsTriggers").onsuccess = (e) => { if (e.target.result) AppState.cnsTriggers = e.target.result.value; if(window.renderTriggers) window.renderTriggers(); };
@@ -134,7 +138,7 @@ function checkDailyReset() {
     renderSupps();
     updateFoodUI();
     updateWaterUI();
-    updateBodyBatteryUI();
+    if(window.calculateRecoveryScore) window.calculateRecoveryScore(); else updateBodyBatteryUI();
     updateWorkoutUI();
     if(window.updateCaffeineUI) window.updateCaffeineUI();
 }
@@ -204,10 +208,13 @@ window.autoParseFood = () => {
 };
 
 window.saveHybridFood = () => {
+    const name = document.getElementById("foodName").value || "Food";
     const b = safeParseInt(document.getElementById("foodB").value);
     const f = safeParseInt(document.getElementById("foodF").value);
     const u = safeParseInt(document.getElementById("foodU").value);
     const k = safeParseInt(document.getElementById("foodKcal").value);
+    
+    if(window.logEvent) window.logEvent("food", { name: name, B: b, F: f, U: u, Kcal: k });
 
     AppState.food.totalB += b; AppState.food.totalF += f;
     AppState.food.totalU += u; AppState.food.totalKcal += k;
@@ -275,6 +282,9 @@ function renderSupps() {
         chk.checked = AppState.supps[key] || false;
         chk.onchange = (e) => {
             AppState.supps[key] = e.target.checked;
+            if(e.target.checked && window.logEvent) {
+                window.logEvent("supplement", { name: suppLabels[key], id: key });
+            }
             saveUIState();
             if(e.target.checked) {
                 if(key === 'mag') showToast("Магний: Лучше за 1-2ч до сна. Не смешивать с кальцием/цинком!");
@@ -322,16 +332,26 @@ window.saveSleep = () => {
     
     let diffHrs = (d2 - d1) / (1000 * 60 * 60);
     
-    if (diffHrs < 4) {
-        AppState.bodyBattery = 2; // Critical
-        document.getElementById("sleepStatus").innerHTML = "<span class='text-danger font-bold'>Критический недосып (<4ч)!</span><br>Body Battery сброшен до 2.";
-        showToast("⚠️ КРИТИЧЕСКИЙ НЕДОСЫП ⚠️");
+    if(window.logEvent) window.logEvent("sleep", { start: t1, end: t2, hrs: diffHrs });
+    AppState.sleepLogs.push({start: t1, end: t2, hrs: diffHrs, date: new Date().toISOString()});
+    
+    if (window.calculateRecoveryScore) {
+        window.calculateRecoveryScore();
     } else {
-        AppState.bodyBattery = Math.min(100, AppState.bodyBattery + (diffHrs * 10)); 
+        if (diffHrs < 4) {
+            AppState.bodyBattery = 2; // Critical
+            showToast("⚠️ КРИТИЧЕСКИЙ НЕДОСЫП ⚠️");
+        } else {
+            AppState.bodyBattery = Math.min(100, AppState.bodyBattery + (diffHrs * 10)); 
+        }
+    }
+    
+    if (diffHrs < 4) {
+        document.getElementById("sleepStatus").innerHTML = "<span class='text-danger font-bold'>Критический недосып (<4ч)!</span><br>Body Battery сброшен.";
+    } else {
         document.getElementById("sleepStatus").innerHTML = `<span class='text-success font-bold'>Сон: ${diffHrs.toFixed(1)}ч. Норма.</span>`;
     }
     
-    AppState.sleepLogs.push({start: t1, end: t2, hrs: diffHrs, date: new Date().toISOString()});
     saveUIState();
     updateBodyBatteryUI();
     updateWorkoutUI();
@@ -370,6 +390,7 @@ window.syncWaterFromNative = () => {
     updateWaterUI();
 };
 window.addWater = (ml) => {
+    if(window.logEvent) window.logEvent("water", { ml: ml });
     if(window.AndroidBridge) { window.AndroidBridge.addWater(ml); syncWaterFromNative(); } 
     else { AppState.water += ml; saveUIState(); updateWaterUI(); }
 };
@@ -449,7 +470,10 @@ window.addRep = () => {
         currentReps = 0;
         const todayStr = new Date().toISOString().slice(0,10);
         if(!AppState.workoutDays.includes(todayStr)) {
-            AppState.workoutDays.push(todayStr); saveUIState(); renderHeatmap();
+            AppState.workoutDays.push(todayStr);
+            if(window.logEvent) window.logEvent("workout", { type: "autoregulation", sets: 3 });
+            if(window.calculateRecoveryScore) window.calculateRecoveryScore();
+            saveUIState(); renderHeatmap();
         }
         showToast("Отлично! Тренировка засчитана.");
     }
@@ -1275,13 +1299,25 @@ window.toggleEditStress = () => { isEditingStress = !isEditingStress; renderTrig
 
 window.addCnsTrigger = () => {
     const val = document.getElementById("newCnsInput").value.trim();
-    if(val) { AppState.cnsTriggers.push(val); document.getElementById("newCnsInput").value = ""; saveUIState(); renderTriggers(); }
+    if(val) { 
+        if(window.logEvent) window.logEvent("cns_recovery", { trigger: val });
+        AppState.cnsTriggers.push(val); 
+        document.getElementById("newCnsInput").value = ""; 
+        if(window.calculateRecoveryScore) window.calculateRecoveryScore();
+        saveUIState(); renderTriggers(); 
+    }
 };
 window.removeCns = (i) => { AppState.cnsTriggers.splice(i, 1); saveUIState(); renderTriggers(); };
 
 window.addStressTrigger = () => {
     const val = document.getElementById("newStressInput").value.trim();
-    if(val) { AppState.stressTriggers.push(val); document.getElementById("newStressInput").value = ""; saveUIState(); renderTriggers(); }
+    if(val) { 
+        if(window.logEvent) window.logEvent("stress", { trigger: val });
+        AppState.stressTriggers.push(val); 
+        document.getElementById("newStressInput").value = ""; 
+        if(window.calculateRecoveryScore) window.calculateRecoveryScore();
+        saveUIState(); renderTriggers(); 
+    }
 };
 window.removeStress = (i) => { AppState.stressTriggers.splice(i, 1); saveUIState(); renderTriggers(); };
 
