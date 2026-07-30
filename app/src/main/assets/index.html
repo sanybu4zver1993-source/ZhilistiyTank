@@ -18,10 +18,10 @@
     </script>
 </head>
     <!-- LOGIN OVERLAY -->
-    <div id="loginOverlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:var(--bg-color); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:white; padding: 20px; box-sizing: border-box;">
+    <div id="loginOverlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#0f0f11; z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:white; padding: 20px; box-sizing: border-box;">
         
         <!-- STANDARD PIN MODE -->
-        <div id="pinModeContainer" style="display:flex; flex-direction:column; align-items:center; width:100%;">
+        <div id="pinModeContainer" style="display:none; flex-direction:column; align-items:center; width:100%;">
             <h2 id="loginTitle" style="color:var(--primary); margin-bottom: 20px;">ВХОД В ТАНК</h2>
             <div style="font-size: 32px; letter-spacing: 10px; margin-bottom: 20px; height: 40px; display: flex; gap: 10px;" id="pinDots">
                 <span>○</span><span>○</span><span>○</span><span>○</span>
@@ -45,7 +45,7 @@
         </div>
 
         <!-- CYBERPUNK CALCULATOR MODE -->
-        <div id="calcModeContainer" style="display:none; flex-direction:column; align-items:center; width:100%; max-width:320px;">
+        <div id="calcModeContainer" style="display:flex; flex-direction:column; align-items:center; width:100%; max-width:320px;">
             <div style="width: 100%; background: #111; padding: 20px; border-radius: 8px; text-align: right; font-size: 40px; margin-bottom: 20px; min-height: 80px; overflow: hidden; font-family: monospace; color: #fff;" id="calcDisplay">
                 0
             </div>
