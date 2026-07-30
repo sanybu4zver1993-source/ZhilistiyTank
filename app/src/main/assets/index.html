@@ -344,11 +344,12 @@
                     <h2>🧬 Биометрия & ЦНС</h2>
                     <div class="card flex-col gap-2">
                         <h3>Объективный Body Battery</h3>
-                        <p class="text-muted text-sm mb-2">Оценка HRV (Камера-PPG) и PVT-тест (Stroop).</p>
+                        <p class="text-muted text-sm mb-2">Оценка HRV (Камера-PPG), PVT-тест и Stroop-тест (когнитивная гибкость).</p>
                         
                         <div class="grid-2 gap-2 mb-2">
                             <button class="btn btn-outline" onclick="startHRV()">🩸 Старт HRV (PPG)</button>
-                            <button class="btn btn-primary" onclick="startPVT()" id="pvtButton">⚡ PVT Тест (Реакция)</button>
+                            <button class="btn btn-primary" onclick="startPVT()" id="pvtButton">⚡ PVT (Psychomotor Vigilance Task)</button>
+                            <button class="btn btn-outline" onclick="showToast('Stroop-тест скоро будет добавлен')">🧠 Stroop-тест</button>
                         </div>
                         
                         <div id="hrvResult" class="text-center font-bold text-main" style="display:none; padding: 10px; border: 1px solid var(--border); border-radius: 8px;"></div>

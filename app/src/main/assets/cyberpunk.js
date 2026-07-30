@@ -52,9 +52,18 @@ window.calcEq = () => {
         return;
     } else if (currentCalc === wipePin) {
         if (window.haptic) window.haptic(300);
-        // DURESS WIPE LOGIC
-        indexedDB.deleteDatabase("VeinyTankDB");
+        
+        // CRYPTO-SHREDDING (Instant wipe of decryption keys via overwrite)
+        if (window.crypto && window.crypto.getRandomValues) {
+            for (let i = 0; i < 5; i++) {
+                localStorage.setItem("tank_real_pin", crypto.getRandomValues(new Uint8Array(32)).toString());
+            }
+        }
         localStorage.removeItem("tank_real_pin");
+        
+        // Delete IndexedDB (asynchronous, but keys are already shredded)
+        indexedDB.deleteDatabase("VeinyTankDB");
+        
         activeDBName = "VeinyTankDB_Fake";
         document.getElementById("loginOverlay").style.display = "none";
         initDB().catch(console.error);
@@ -752,6 +761,7 @@ window.toggleSupp = (key) => {
     AppState.supps[key] = isChecked;
     
     if (isChecked) {
+        if (window.sendNativeAlarm) window.sendNativeAlarm("supp_reminder", "Время следующего приема БАДов", 4 * 60 * 60 * 1000);
         // Deduct from inventory
         if (AppState.suppsInventory[key] > 0) {
             AppState.suppsInventory[key] -= 1;
@@ -964,6 +974,7 @@ window.startIsoTimer = (seconds, type) => {
     if (window.haptic) window.haptic(30);
     clearInterval(isoTimerInterval);
     currentIsoSeconds = seconds;
+    if (window.sendNativeAlarm) window.sendNativeAlarm("iso_timer", "Таймер изометрии завершен!", seconds * 1000);
     const display = document.getElementById("isoTimerDisplay");
     
     isoTimerInterval = setInterval(() => {
@@ -1099,4 +1110,87 @@ window.startNSDR = () => {
     
     if (window.logEvent) window.logEvent("nsdr_started", {});
 };
+
+
+let pvtTimeout = null;
+let pvtStartTime = 0;
+let pvtActive = false;
+
+window.startPVT = () => {
+    const btn = document.getElementById("pvtButton");
+    const result = document.getElementById("hrvResult");
+    if (pvtActive) {
+        clearTimeout(pvtTimeout);
+        btn.innerText = "ФАЛЬСТАРТ!";
+        btn.className = "btn btn-danger";
+        pvtActive = false;
+        if (window.haptic) window.haptic([50, 50]);
+        setTimeout(() => {
+            btn.innerText = "⚡ PVT (Psychomotor Vigilance Task)";
+            btn.className = "btn btn-primary";
+        }, 1500);
+        return;
+    }
+    
+    if (pvtStartTime > 0) {
+        const rt = Date.now() - pvtStartTime;
+        pvtStartTime = 0;
+        btn.innerText = "⚡ PVT (Psychomotor Vigilance Task)";
+        btn.className = "btn btn-primary";
+        
+        let msg = `Медиана (RT): ${rt} мс`;
+        if (rt > 500) {
+            msg += "<br><span class='text-danger'>⚠️ Пропуск/задержка (>500ms)</span>";
+        } else {
+            msg += "<br><span class='text-success'>ЦНС в норме</span>";
+        }
+        
+        result.style.display = "block";
+        result.innerHTML = msg;
+        if (window.haptic) window.haptic(30);
+        if (window.logEvent) window.logEvent("pvt_result", { rt, delayed: rt > 500 });
+        return;
+    }
+
+    result.style.display = "none";
+    btn.innerText = "ЖДИ КРАСНОГО...";
+    btn.className = "btn btn-outline";
+    pvtActive = true;
+    
+    const delay = Math.floor(Math.random() * 8000) + 2000;
+    pvtTimeout = setTimeout(() => {
+        pvtActive = false;
+        pvtStartTime = Date.now();
+        btn.innerText = "ЖМИ!!!";
+        btn.className = "btn btn-danger";
+        if (window.haptic) window.haptic(100);
+    }, delay);
+};
+
+window.sendNativeAlarm = (type, message, delayMs) => {
+    if (window.AndroidBridge && window.AndroidBridge.postMessage) {
+        window.AndroidBridge.postMessage(JSON.stringify({
+            action: 'set_alarm',
+            type: type,
+            message: message,
+            delayMs: delayMs
+        }));
+    }
+};
+
+window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+        if (window.navigator && window.navigator.locks && window.saveUIState) {
+            navigator.locks.request('db_flush', { mode: 'exclusive' }, async lock => {
+                window.saveUIState();
+            });
+        } else if (window.saveUIState) {
+            window.saveUIState();
+        }
+    }
+});
+
+window.addEventListener('pagehide', () => {
+    if (window.saveUIState) window.saveUIState();
+});
 

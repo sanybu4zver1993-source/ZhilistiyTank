@@ -192,6 +192,7 @@ window.addWater = (ml) => {
     saveUIState();
     syncWaterFromNative();
     if(window.logEvent) window.logEvent("water", { ml });
+    if (window.sendNativeAlarm) window.sendNativeAlarm("water_reminder", "Время пить воду (2 часа)", 2 * 60 * 60 * 1000);
 };
 
 window.syncWaterFromNative = () => {
