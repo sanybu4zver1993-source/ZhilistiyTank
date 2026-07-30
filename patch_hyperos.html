@@ -1,0 +1,15 @@
+                    <div class="card flex-col gap-2 mt-2" style="border-color: var(--warning);">
+                        <h3 class="text-warning" style="margin: 0; font-size: 16px;">🛠 HyperOS / MIUI Тюнинг (Redmi 13C)</h3>
+                        <ul class="text-sm text-left text-muted" style="list-style-type: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 5px;">
+                            <li><input type="checkbox" checked> Автозапуск (Autostart)</li>
+                            <li><input type="checkbox" checked> Нет ограничений (No Restrictions)</li>
+                            <li><input type="checkbox" checked> Закреплено в Недавних (Замок 🔒)</li>
+                            <li><input type="checkbox" checked> Исключено из очистки Security</li>
+                        </ul>
+                        <button class="btn btn-outline text-sm" style="border-color: var(--warning); color: var(--warning);" onclick="checkBridgeReconciliation()">🔄 Сверка AndroidBridge Алармов</button>
+                    </div>
+                    
+                    <div class="card flex-col gap-2 mt-2" style="border-color: var(--success);">
+                        <h3 class="text-success" style="margin: 0; font-size: 16px;">🛡 Sandbox Restore</h3>
+                        <button class="btn btn-outline text-sm" style="border-color: var(--success); color: var(--success);" onclick="testSandboxRestore()">🧪 Тест бэкапа в изолированной среде</button>
+                    </div>

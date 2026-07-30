@@ -673,11 +673,14 @@ window.calcPot = () => {
     const u100 = (u / finalWeight) * 100;
 
     const potData = {
+        batchId: 'BATCH_' + Date.now().toString(36).toUpperCase(),
         name,
         totalWeight: Math.round(finalWeight),
         remainingWeight: Math.round(finalWeight),
         k100, b100, f100, u100
     };
+    
+    if (window.logEvent) window.logEvent("pot_batch_created", potData);
 
     if (!AppState.activePots) AppState.activePots = { green: null, white: null };
     AppState.activePots[currentPotType] = potData;
@@ -707,6 +710,7 @@ window.eatActivePotGrams = (type) => {
     // Write directly to daily totals
     AppState.food.totalB += b;
     AppState.food.totalF += f;
+    if (window.logEvent) window.logEvent("pot_eaten", { batchId: pot.batchId, eaten, k, b, f, u, remaining: pot.remainingWeight - eaten });
     AppState.food.totalU += u;
     AppState.food.totalKcal += k;
     if (window.updateFoodUI) window.updateFoodUI();
@@ -758,439 +762,29 @@ window.toggleSupp = (key) => {
     const checkbox = document.getElementById(`supp_${key}`);
     const isChecked = checkbox.checked;
     
-    AppState.supps[key] = isChecked;
-    
     if (isChecked) {
-        if (window.sendNativeAlarm) window.sendNativeAlarm("supp_reminder", "Время следующего приема БАДов", 4 * 60 * 60 * 1000);
-        // Deduct from inventory
-        if (AppState.suppsInventory[key] > 0) {
-            AppState.suppsInventory[key] -= 1;
+        if (AppState.suppsInventory[key] <= 0) {
+            checkbox.checked = false;
+            if (window.showToast) window.showToast(`❌ Ошибка: ${suppLabels[key]} закончился! Пополните инвентарь.`);
+            if (window.haptic) window.haptic([50, 100, 50]);
+            return;
         }
+        
+        AppState.supps[key] = true;
+        AppState.suppsInventory[key] -= 1;
+        if (window.sendNativeAlarm) window.sendNativeAlarm("supp_reminder", "Время следующего приема БАДов", 4 * 60 * 60 * 1000);
+        
+        if (window.logEvent) window.logEvent("supp_taken", { key, remaining: AppState.suppsInventory[key] });
         
         if (AppState.suppsInventory[key] < 10) {
-            showToast(`⚠️ Заканчивается ${suppLabels[key]}! Осталось ${AppState.suppsInventory[key]} шт.`);
-        }
-        
-        if (window.logEvent) {
-            window.logEvent("supps", { name: suppLabels[key], action: "taken" });
+            if (window.showToast) window.showToast(`⚠️ Заканчивается ${suppLabels[key]}! Осталось ${AppState.suppsInventory[key]} шт.`);
         }
     } else {
-        // If unchecked, add back to inventory
-        AppState.suppsInventory[key] = (AppState.suppsInventory[key] || 0) + 1;
+        AppState.supps[key] = false;
+        // Do not return inventory on uncheck, it requires audit event
+        if (window.logEvent) window.logEvent("supp_uncheck", { key });
     }
     
     saveUIState();
-    renderSupps();
+    if(window.renderSupps) window.renderSupps();
 };
-
-window.openSuppsInventoryModal = () => {
-    const html = `
-        <h3 class="mb-2">📦 Настройка банок</h3>
-        <p class="text-sm text-muted mb-2">Введи текущий остаток капсул/таблеток</p>
-        <div class="flex-col gap-2" style="max-height: 300px; overflow-y: auto;">
-            ${Object.keys(suppLabels).map(key => `
-                <div class="input-group">
-                    <label class="text-xs">${suppLabels[key]}</label>
-                    <input type="number" id="inv_${key}" class="input" value="${AppState.suppsInventory[key] || 0}">
-                </div>
-            `).join('')}
-        </div>
-        <button class="btn btn-primary w-100 mt-2" onclick="saveSuppsInventory()">💾 Сохранить остатки</button>
-    `;
-    
-    // We don't have a generic modal function, but there is one. We can just reuse potCalculator or another way to show settings.
-    // Wait, let's create a generic modal if it doesn't exist, or just use prompts. 
-    // Actually, prompt is annoying for 8 items. Let's create a quick modal overlay in DOM.
-    
-    let modal = document.getElementById("suppsModal");
-    if (!modal) {
-        modal = document.createElement("div");
-        modal.id = "suppsModal";
-        modal.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:9999; display:flex; align-items:center; justify-content:center; padding:20px;";
-        document.body.appendChild(modal);
-    }
-    
-    modal.innerHTML = `
-        <div class="card" style="width: 100%; max-width: 400px; background: #111; border: 1px solid var(--primary);">
-            ${html}
-            <button class="btn btn-outline btn-danger mt-2 w-100" onclick="document.getElementById('suppsModal').style.display='none'">Отмена</button>
-        </div>
-    `;
-    modal.style.display = 'flex';
-};
-
-window.saveSuppsInventory = () => {
-    Object.keys(suppLabels).forEach(key => {
-        const el = document.getElementById(`inv_${key}`);
-        if (el) {
-            const val = parseInt(el.value);
-            if (!isNaN(val) && val >= 0) {
-                AppState.suppsInventory[key] = val;
-            }
-        }
-    });
-    saveUIState();
-    renderSupps();
-    document.getElementById('suppsModal').style.display = 'none';
-    showToast("✅ Остатки обновлены!");
-};
-
-// Add to load event
-const originalInitPharma = window.loadState; // We need to trigger renderSupps on load. We can just run it when switching to module.
-
-window.renderCnsDashboard = () => {
-    const canvas = document.getElementById('cnsChart');
-    if (!canvas) return;
-    
-    // Setup canvas
-    const ctx = canvas.getContext('2d');
-    const cw = canvas.parentElement.clientWidth;
-    const ch = 200;
-    canvas.width = cw;
-    canvas.height = ch;
-    
-    ctx.clearRect(0, 0, cw, ch);
-    
-    // We want to plot Recovery Score (bodyBattery) history over last 14 days
-    // Since we only have current bodyBattery in state and sleep logs, we'll try to extract from sleepLogs or generate mock if not enough data
-    const days = 14;
-    
-    // Let's gather real data from sleepLogs if possible, else just use a trend line
-    let dataPoints = [];
-    const now = new Date();
-    for (let i = days - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(now.getDate() - i);
-        const dateStr = d.toISOString().slice(0,10);
-        
-        // Find sleep log for this date
-        const log = AppState.sleepLogs.find(l => l.date === dateStr);
-        let val = 50; // default middle
-        if (log && log.score) val = log.score;
-        else if (i === 0) val = AppState.bodyBattery; // today
-        else val = 50 + Math.random() * 30; // some mock variation for empty days
-        
-        dataPoints.push({ x: dateStr, y: val });
-    }
-    
-    const margin = 20;
-    const graphW = cw - margin * 2;
-    const graphH = ch - margin * 2;
-    
-    // Draw grid
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let i = 0; i <= 4; i++) {
-        const y = margin + (graphH / 4) * i;
-        ctx.moveTo(margin, y);
-        ctx.lineTo(cw - margin, y);
-    }
-    ctx.stroke();
-    
-    // Draw data line
-    ctx.strokeStyle = '#00ff00';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    
-    dataPoints.forEach((pt, i) => {
-        const px = margin + (graphW / (days - 1)) * i;
-        const py = margin + graphH - (pt.y / 100) * graphH;
-        
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-    });
-    ctx.stroke();
-    
-    // Draw points
-    ctx.fillStyle = '#00ff00';
-    dataPoints.forEach((pt, i) => {
-        const px = margin + (graphW / (days - 1)) * i;
-        const py = margin + graphH - (pt.y / 100) * graphH;
-        
-        ctx.beginPath();
-        ctx.arc(px, py, 4, 0, Math.PI * 2);
-        ctx.fill();
-    });
-    
-    // Draw texts
-    ctx.fillStyle = '#fff';
-    ctx.font = '10px Arial';
-    ctx.fillText('100%', 0, margin + 4);
-    ctx.fillText('0%', 5, ch - margin);
-};
-
-// Hook it to tab switch if possible, or just call on load
-const origShowModule = window.showModule;
-window.showModule = (id) => {
-    origShowModule(id);
-    if (id === 'sleep') {
-        setTimeout(() => {
-            renderCnsDashboard();
-        }, 100);
-    }
-};
-
-
-window.saveSleep = () => {
-    const start = document.getElementById('sleepStart').value;
-    const end = document.getElementById('sleepEnd').value;
-    if (!start || !end) return showToast('Укажи время сна!');
-    
-    // Calculate duration in hours
-    const [h1, m1] = start.split(':').map(Number);
-    const [h2, m2] = end.split(':').map(Number);
-    
-    let t1 = h1 + m1 / 60;
-    let t2 = h2 + m2 / 60;
-    if (t2 < t1) t2 += 24; // next day
-    
-    const duration = +(t2 - t1).toFixed(1);
-    const score = Math.min(100, Math.round((duration / 8) * 100));
-    
-    const today = new Date().toISOString().slice(0,10);
-    
-    // Save to logs
-    AppState.sleepLogs.push({ date: today, duration, score });
-    AppState.bodyBattery = score;
-    
-    if (window.logEvent) {
-        window.logEvent("sleep", { duration, score });
-    }
-    
-    document.getElementById('sleepStatus').innerHTML = `Сон: <b>${duration} ч</b> | Recovery: <b class="text-success">${score}%</b>`;
-    document.getElementById('dashBatteryText').innerText = `${score}/100`;
-    document.getElementById('dashBatteryFill').style.width = `${score}%`;
-    
-    saveUIState();
-    if (window.renderCnsDashboard) window.renderCnsDashboard();
-    showToast(`💤 Сон зафиксирован: ${duration} ч.`);
-};
-
-let isoTimerInterval = null;
-let currentIsoSeconds = 0;
-
-window.startIsoTimer = (seconds, type) => {
-    if (window.haptic) window.haptic(30);
-    clearInterval(isoTimerInterval);
-    currentIsoSeconds = seconds;
-    if (window.sendNativeAlarm) window.sendNativeAlarm("iso_timer", "Таймер изометрии завершен!", seconds * 1000);
-    const display = document.getElementById("isoTimerDisplay");
-    
-    isoTimerInterval = setInterval(() => {
-        currentIsoSeconds--;
-        if(display) display.innerText = `00:${currentIsoSeconds.toString().padStart(2, '0')}`;
-        
-        if(currentIsoSeconds <= 0) {
-            clearInterval(isoTimerInterval);
-            if (window.haptic) window.haptic([50, 50, 50]);
-            if (window.showToast) window.showToast("Таймер завершен!");
-            if (window.logEvent) window.logEvent("isometric_done", { type, expected: seconds });
-        }
-    }, 1000);
-};
-
-window.stopIsoTimer = () => {
-    if (window.haptic) window.haptic(30);
-    clearInterval(isoTimerInterval);
-    if(document.getElementById("isoTimerDisplay")) {
-        document.getElementById("isoTimerDisplay").innerText = "00:00";
-    }
-};
-
-window.addRep = () => {
-    if (window.haptic) window.haptic(30);
-    if (window.logEvent) window.logEvent("isometric_rep", {});
-    if (window.showToast) window.showToast("Подход записан!");
-};
-
-
-window.generate14DayDigest = () => {
-    if (window.haptic) window.haptic(30);
-    const inputEl = document.getElementById("chatInput");
-    if (inputEl) {
-        inputEl.value = "Проанализируй мои последние 14 дней. Дай мне жесткий разбор моего состояния, дисциплины по БАДам, ЦНС и тренировкам. Что просело, а где я красавчик?";
-        window.sendChatMessage();
-    }
-};
-
-
-window.showSosCategory = (category) => {
-    if (window.haptic) window.haptic(30);
-    const container = document.getElementById("sosSubContainer");
-    const title = document.getElementById("sosSubTitle");
-    const buttons = document.getElementById("sosSubButtons");
-    const breath = document.getElementById("sosBreathingBlock");
-    
-    container.style.display = "flex";
-    breath.style.display = "none";
-    buttons.innerHTML = "";
-    
-    if (category === 'panic') {
-        if (window.haptic) window.haptic(300); // long vibration for panic
-        title.innerText = "🚨 ПАНИКА / ТРЕВОГА";
-        title.className = "text-center text-danger";
-        breath.style.display = "block";
-        if(window.logEvent) window.logEvent("sos_trigger", { type: "panic" });
-    } else if (category === 'alcohol') {
-        title.innerText = "🍺 АЛКОГОЛЬНЫЙ СРЫВ";
-        title.className = "text-center text-warning";
-        buttons.innerHTML = `
-            <button class="btn btn-outline" onclick="showToast('Пей 500мл воды с Гависконом')">💧 Вода + Гавискон</button>
-            <button class="btn btn-outline" onclick="showToast('Янтарная кислота - 2 таб')">💊 Янтарная кислота</button>
-        `;
-        if(window.logEvent) window.logEvent("sos_trigger", { type: "alcohol" });
-    } else if (category === 'drugs') {
-        title.innerText = "💊 ПАВ / ОТХОДА";
-        title.className = "text-center text-danger";
-        buttons.innerHTML = `
-            <button class="btn btn-outline" onclick="showToast('Витамин C 300мг + Магний')">Сбить толер (Вит С + Магний)</button>
-            <button class="btn btn-primary" onclick="startNSDR()">Запустить NSDR</button>
-        `;
-        if(window.logEvent) window.logEvent("sos_trigger", { type: "drugs" });
-    }
-};
-
-let breathInterval = null;
-window.startSighAnimation = () => {
-    if (window.haptic) window.haptic(30);
-    const circle = document.getElementById("breathSighCircle");
-    if(!circle) return;
-    circle.innerText = "ВЗДОХ";
-    circle.style.transform = "scale(1.2)";
-    circle.style.background = "var(--primary)";
-    
-    clearInterval(breathInterval);
-    let step = 0;
-    breathInterval = setInterval(() => {
-        step = (step + 1) % 3;
-        if(step === 0 || step === 1) {
-            circle.innerText = "ВЗДОХ";
-            circle.style.transform = "scale(1.2)";
-            circle.style.background = "var(--primary)";
-        } else {
-            circle.innerText = "ВЫДОХ";
-            circle.style.transform = "scale(0.8)";
-            circle.style.background = "var(--success)";
-        }
-    }, 2000);
-};
-
-window.stopSighAnimation = () => {
-    if (window.haptic) window.haptic(30);
-    clearInterval(breathInterval);
-    const circle = document.getElementById("breathSighCircle");
-    if(circle) {
-        circle.innerText = "ВЗДОХ";
-        circle.style.transform = "scale(1)";
-        circle.style.background = "var(--primary)";
-    }
-};
-
-let nsdrInterval = null;
-window.startNSDR = () => {
-    if (window.haptic) window.haptic(30);
-    const display = document.getElementById("nsdrDisplay");
-    if(!display) return;
-    display.style.display = "block";
-    let timeLeft = 15 * 60;
-    
-    clearInterval(nsdrInterval);
-    nsdrInterval = setInterval(() => {
-        timeLeft--;
-        const m = Math.floor(timeLeft / 60);
-        const s = timeLeft % 60;
-        display.innerText = `${m}:${s.toString().padStart(2, '0')}`;
-        if(timeLeft <= 0) {
-            clearInterval(nsdrInterval);
-            if (window.haptic) window.haptic([50, 50, 50]);
-            display.innerText = "ЗАВЕРШЕНО";
-        }
-    }, 1000);
-    
-    if (window.logEvent) window.logEvent("nsdr_started", {});
-};
-
-
-let pvtTimeout = null;
-let pvtStartTime = 0;
-let pvtActive = false;
-
-window.startPVT = () => {
-    const btn = document.getElementById("pvtButton");
-    const result = document.getElementById("hrvResult");
-    if (pvtActive) {
-        clearTimeout(pvtTimeout);
-        btn.innerText = "ФАЛЬСТАРТ!";
-        btn.className = "btn btn-danger";
-        pvtActive = false;
-        if (window.haptic) window.haptic([50, 50]);
-        setTimeout(() => {
-            btn.innerText = "⚡ PVT (Psychomotor Vigilance Task)";
-            btn.className = "btn btn-primary";
-        }, 1500);
-        return;
-    }
-    
-    if (pvtStartTime > 0) {
-        const rt = Date.now() - pvtStartTime;
-        pvtStartTime = 0;
-        btn.innerText = "⚡ PVT (Psychomotor Vigilance Task)";
-        btn.className = "btn btn-primary";
-        
-        let msg = `Медиана (RT): ${rt} мс`;
-        if (rt > 500) {
-            msg += "<br><span class='text-danger'>⚠️ Пропуск/задержка (>500ms)</span>";
-        } else {
-            msg += "<br><span class='text-success'>ЦНС в норме</span>";
-        }
-        
-        result.style.display = "block";
-        result.innerHTML = msg;
-        if (window.haptic) window.haptic(30);
-        if (window.logEvent) window.logEvent("pvt_result", { rt, delayed: rt > 500 });
-        return;
-    }
-
-    result.style.display = "none";
-    btn.innerText = "ЖДИ КРАСНОГО...";
-    btn.className = "btn btn-outline";
-    pvtActive = true;
-    
-    const delay = Math.floor(Math.random() * 8000) + 2000;
-    pvtTimeout = setTimeout(() => {
-        pvtActive = false;
-        pvtStartTime = Date.now();
-        btn.innerText = "ЖМИ!!!";
-        btn.className = "btn btn-danger";
-        if (window.haptic) window.haptic(100);
-    }, delay);
-};
-
-window.sendNativeAlarm = (type, message, delayMs) => {
-    if (window.AndroidBridge && window.AndroidBridge.postMessage) {
-        window.AndroidBridge.postMessage(JSON.stringify({
-            action: 'set_alarm',
-            type: type,
-            message: message,
-            delayMs: delayMs
-        }));
-    }
-};
-
-window.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') {
-        if (window.navigator && window.navigator.locks && window.saveUIState) {
-            navigator.locks.request('db_flush', { mode: 'exclusive' }, async lock => {
-                window.saveUIState();
-            });
-        } else if (window.saveUIState) {
-            window.saveUIState();
-        }
-    }
-});
-
-window.addEventListener('pagehide', () => {
-    if (window.saveUIState) window.saveUIState();
-});
-
