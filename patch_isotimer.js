@@ -1,19 +1,37 @@
-window.startIsoTimer = (seconds, gear) => {
-    stopIsoTimer();
-    const display = document.getElementById("isoTimerDisplay");
-    let time = seconds;
-    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-    display.style.backgroundColor = "var(--danger)";
-    display.innerText = `РАБОТА: ${time}с`;
 
-    isoTimer = setInterval(() => {
-        time--; display.innerText = `РАБОТА: ${time}с`;
-        if (time <= 0) {
-            stopIsoTimer(); display.style.backgroundColor = "var(--success)"; display.innerText = "ОТДЫХ!";
-            if (navigator.vibrate) navigator.vibrate([500]); 
-            if(window.logEvent) window.logEvent('workout', { gear: gear || 'iso', duration_s: seconds, rpe: 8 });
-            if(window.calculateRecoveryScore) window.calculateRecoveryScore();
-            if(window.scheduleNativePush) window.scheduleNativePush("Тренировка", "Пора сделать следующий подход!", 2);
+let isoTimerInterval = null;
+let currentIsoSeconds = 0;
+
+window.startIsoTimer = (seconds, type) => {
+    if (window.haptic) window.haptic(30);
+    clearInterval(isoTimerInterval);
+    currentIsoSeconds = seconds;
+    const display = document.getElementById("isoTimerDisplay");
+    
+    isoTimerInterval = setInterval(() => {
+        currentIsoSeconds--;
+        if(display) display.innerText = `00:${currentIsoSeconds.toString().padStart(2, '0')}`;
+        
+        if(currentIsoSeconds <= 0) {
+            clearInterval(isoTimerInterval);
+            if (window.haptic) window.haptic([50, 50, 50]);
+            if (window.showToast) window.showToast("Таймер завершен!");
+            if (window.logEvent) window.logEvent("isometric_done", { type, expected: seconds });
         }
     }, 1000);
 };
+
+window.stopIsoTimer = () => {
+    if (window.haptic) window.haptic(30);
+    clearInterval(isoTimerInterval);
+    if(document.getElementById("isoTimerDisplay")) {
+        document.getElementById("isoTimerDisplay").innerText = "00:00";
+    }
+};
+
+window.addRep = () => {
+    if (window.haptic) window.haptic(30);
+    if (window.logEvent) window.logEvent("isometric_rep", {});
+    if (window.showToast) window.showToast("Подход записан!");
+};
+

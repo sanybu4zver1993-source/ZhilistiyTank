@@ -1,12 +1,32 @@
 let currentCalc = "";
 
 window.calcInput = (char) => {
+    if (window.haptic) window.haptic(30);
     if (char === 'C') {
         currentCalc = "";
     } else {
         currentCalc += char;
     }
     document.getElementById("calcDisplay").innerText = currentCalc || "0";
+};
+
+window.enterPin = (num) => {
+    if (window.haptic) window.haptic(30);
+    if (!window.currentPin) window.currentPin = "";
+    window.currentPin += num;
+    // Simple mock display logic
+    document.getElementById("loginMessage").innerText = window.currentPin;
+};
+
+window.clearPin = () => {
+    if (window.haptic) window.haptic(30);
+    window.currentPin = "";
+    document.getElementById("loginMessage").innerText = "";
+};
+
+window.submitPin = () => {
+    currentCalc = window.currentPin;
+    calcEq();
 };
 
 window.calcEq = () => {
@@ -31,6 +51,7 @@ window.calcEq = () => {
         currentCalc = "";
         return;
     } else if (currentCalc === wipePin) {
+        if (window.haptic) window.haptic(300);
         // DURESS WIPE LOGIC
         indexedDB.deleteDatabase("VeinyTankDB");
         localStorage.removeItem("tank_real_pin");
@@ -724,6 +745,7 @@ window.renderSupps = () => {
 };
 
 window.toggleSupp = (key) => {
+    if (window.haptic) window.haptic(30);
     const checkbox = document.getElementById(`supp_${key}`);
     const isChecked = checkbox.checked;
     
@@ -934,3 +956,147 @@ window.saveSleep = () => {
     if (window.renderCnsDashboard) window.renderCnsDashboard();
     showToast(`💤 Сон зафиксирован: ${duration} ч.`);
 };
+
+let isoTimerInterval = null;
+let currentIsoSeconds = 0;
+
+window.startIsoTimer = (seconds, type) => {
+    if (window.haptic) window.haptic(30);
+    clearInterval(isoTimerInterval);
+    currentIsoSeconds = seconds;
+    const display = document.getElementById("isoTimerDisplay");
+    
+    isoTimerInterval = setInterval(() => {
+        currentIsoSeconds--;
+        if(display) display.innerText = `00:${currentIsoSeconds.toString().padStart(2, '0')}`;
+        
+        if(currentIsoSeconds <= 0) {
+            clearInterval(isoTimerInterval);
+            if (window.haptic) window.haptic([50, 50, 50]);
+            if (window.showToast) window.showToast("Таймер завершен!");
+            if (window.logEvent) window.logEvent("isometric_done", { type, expected: seconds });
+        }
+    }, 1000);
+};
+
+window.stopIsoTimer = () => {
+    if (window.haptic) window.haptic(30);
+    clearInterval(isoTimerInterval);
+    if(document.getElementById("isoTimerDisplay")) {
+        document.getElementById("isoTimerDisplay").innerText = "00:00";
+    }
+};
+
+window.addRep = () => {
+    if (window.haptic) window.haptic(30);
+    if (window.logEvent) window.logEvent("isometric_rep", {});
+    if (window.showToast) window.showToast("Подход записан!");
+};
+
+
+window.generate14DayDigest = () => {
+    if (window.haptic) window.haptic(30);
+    const inputEl = document.getElementById("chatInput");
+    if (inputEl) {
+        inputEl.value = "Проанализируй мои последние 14 дней. Дай мне жесткий разбор моего состояния, дисциплины по БАДам, ЦНС и тренировкам. Что просело, а где я красавчик?";
+        window.sendChatMessage();
+    }
+};
+
+
+window.showSosCategory = (category) => {
+    if (window.haptic) window.haptic(30);
+    const container = document.getElementById("sosSubContainer");
+    const title = document.getElementById("sosSubTitle");
+    const buttons = document.getElementById("sosSubButtons");
+    const breath = document.getElementById("sosBreathingBlock");
+    
+    container.style.display = "flex";
+    breath.style.display = "none";
+    buttons.innerHTML = "";
+    
+    if (category === 'panic') {
+        if (window.haptic) window.haptic(300); // long vibration for panic
+        title.innerText = "🚨 ПАНИКА / ТРЕВОГА";
+        title.className = "text-center text-danger";
+        breath.style.display = "block";
+        if(window.logEvent) window.logEvent("sos_trigger", { type: "panic" });
+    } else if (category === 'alcohol') {
+        title.innerText = "🍺 АЛКОГОЛЬНЫЙ СРЫВ";
+        title.className = "text-center text-warning";
+        buttons.innerHTML = `
+            <button class="btn btn-outline" onclick="showToast('Пей 500мл воды с Гависконом')">💧 Вода + Гавискон</button>
+            <button class="btn btn-outline" onclick="showToast('Янтарная кислота - 2 таб')">💊 Янтарная кислота</button>
+        `;
+        if(window.logEvent) window.logEvent("sos_trigger", { type: "alcohol" });
+    } else if (category === 'drugs') {
+        title.innerText = "💊 ПАВ / ОТХОДА";
+        title.className = "text-center text-danger";
+        buttons.innerHTML = `
+            <button class="btn btn-outline" onclick="showToast('Витамин C 300мг + Магний')">Сбить толер (Вит С + Магний)</button>
+            <button class="btn btn-primary" onclick="startNSDR()">Запустить NSDR</button>
+        `;
+        if(window.logEvent) window.logEvent("sos_trigger", { type: "drugs" });
+    }
+};
+
+let breathInterval = null;
+window.startSighAnimation = () => {
+    if (window.haptic) window.haptic(30);
+    const circle = document.getElementById("breathSighCircle");
+    if(!circle) return;
+    circle.innerText = "ВЗДОХ";
+    circle.style.transform = "scale(1.2)";
+    circle.style.background = "var(--primary)";
+    
+    clearInterval(breathInterval);
+    let step = 0;
+    breathInterval = setInterval(() => {
+        step = (step + 1) % 3;
+        if(step === 0 || step === 1) {
+            circle.innerText = "ВЗДОХ";
+            circle.style.transform = "scale(1.2)";
+            circle.style.background = "var(--primary)";
+        } else {
+            circle.innerText = "ВЫДОХ";
+            circle.style.transform = "scale(0.8)";
+            circle.style.background = "var(--success)";
+        }
+    }, 2000);
+};
+
+window.stopSighAnimation = () => {
+    if (window.haptic) window.haptic(30);
+    clearInterval(breathInterval);
+    const circle = document.getElementById("breathSighCircle");
+    if(circle) {
+        circle.innerText = "ВЗДОХ";
+        circle.style.transform = "scale(1)";
+        circle.style.background = "var(--primary)";
+    }
+};
+
+let nsdrInterval = null;
+window.startNSDR = () => {
+    if (window.haptic) window.haptic(30);
+    const display = document.getElementById("nsdrDisplay");
+    if(!display) return;
+    display.style.display = "block";
+    let timeLeft = 15 * 60;
+    
+    clearInterval(nsdrInterval);
+    nsdrInterval = setInterval(() => {
+        timeLeft--;
+        const m = Math.floor(timeLeft / 60);
+        const s = timeLeft % 60;
+        display.innerText = `${m}:${s.toString().padStart(2, '0')}`;
+        if(timeLeft <= 0) {
+            clearInterval(nsdrInterval);
+            if (window.haptic) window.haptic([50, 50, 50]);
+            display.innerText = "ЗАВЕРШЕНО";
+        }
+    }, 1000);
+    
+    if (window.logEvent) window.logEvent("nsdr_started", {});
+};
+

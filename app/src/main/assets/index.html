@@ -300,6 +300,7 @@
                 <!-- CHAT MODULE -->
                 <div id="module-chat" class="module">
                     <h2>💬 ИИ-Тренер</h2>
+                    <button class="btn btn-primary mt-2 mb-2 w-100" onclick="generate14DayDigest()" style="width: 100%;">📊 Сгенерировать отчёт за 14 дней</button>
                     <div class="card flex-col gap-2 mt-2" style="height: 60vh; display: flex; flex-direction: column;">
                         <div id="chatHistory" style="flex: 1; overflow-y: auto; background: var(--bg); padding: 10px; border-radius: 8px; display: flex; flex-direction: column; gap: 10px;">
                             <div class="text-muted text-sm text-center">Тренер готов. Задай вопрос о своем состоянии.</div>
@@ -390,8 +391,11 @@
 
                 <!-- API KEYS -->
                 <div id="module-settings" class="module">
-                    <h2>⚙️ Настройки API</h2>
+                    <h2>⚙️ Настройки API и Бэкапы</h2>
                     <div class="card flex-col gap-2">
+                        <button class="btn btn-outline" style="border-color: var(--success); color: var(--success);" onclick="exportEncryptedJSON()">💾 Скачать зашифрованный JSON-дамп</button>
+                    </div>
+                    <div class="card flex-col gap-2 mt-2">
                         <div class="input-group">
                             <label>Gemini API Key</label>
                             <input type="password" id="geminiKey" class="input">
