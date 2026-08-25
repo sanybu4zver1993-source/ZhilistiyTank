@@ -16,6 +16,38 @@
             });
         }
     </script>
+
+    <script>
+        // FAIL-CLOSED & ANTI-FORENSICS
+        if (!location.hostname.includes('localhost') && !location.hostname.includes('127.0.0.1')) {
+            window.console.log = function(){};
+            window.console.warn = function(){};
+            window.console.info = function(){};
+            window.console.error = function(){};
+        }
+        
+        // RAM Scrubbing & Visibility Lock
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                // Clear UI to prevent snapshot leaks in Recents
+                if (document.getElementById('loginOverlay') && document.getElementById('loginOverlay').style.display === 'none') {
+                    // Temporarily hide sensitive data by throwing up the calculator
+                    document.getElementById('loginOverlay').style.display = 'flex';
+                    document.getElementById('pinModeContainer').style.display = 'none';
+                    document.getElementById('calcModeContainer').style.display = 'flex';
+                }
+            }
+        });
+        
+        // Disable global uncaught exceptions leaking info
+        window.addEventListener('error', function (e) {
+            e.preventDefault(); // Stop default logging
+            // Fail-closed approach: If fatal error, force lock
+            if (e.message.toLowerCase().includes('crypto') || e.message.toLowerCase().includes('db')) {
+                 location.reload();
+            }
+        });
+    </script>
 </head>
     <!-- LOGIN OVERLAY -->
     <div id="loginOverlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#0f0f11; z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:white; padding: 20px; box-sizing: border-box;">
@@ -134,6 +166,7 @@
                 <!-- ДОСЬЕ (МАСТЕР-ПРОФИЛЬ) -->
                 <div id="module-dossier" class="module">
                     <h2>🗃 Личное Досье</h2>
+<button class="btn btn-outline mb-2" style="border-color: #9b59b6; color: #9b59b6;" onclick="exportMedicalReportTxt()">📄 Вивантажити мед. звіт (.txt)</button>
                     <div class="card flex-col gap-2">
                         <p class="text-muted text-sm mb-2">Эти данные локальны. Они нужны для точных расчетов и контекста ИИ-тренера.</p>
                         
@@ -179,212 +212,11 @@
                         
                         <hr class="border-gray mt-2 mb-2">
                         <p class="text-sm font-bold text-center">🫕 МЕГА-ВАРКА (Режим Кастрюли)</p>
-                        <div class="grid-2 gap-2 mt-2">
-                            <button class="btn btn-outline text-sm" style="border-color: #2ecc71; color: #2ecc71;" onclick="openPotModal('green')">🟢 Зеленая (3л)</button>
-                            <button class="btn btn-outline text-sm" style="border-color: #f1c40f; color: #f1c40f;" onclick="openPotModal('white')">🌼 Белая (2л)</button>
-                        </div>
-                        <div id="potCalculator" class="card mt-2" style="display:none; background: #1a1a1a; padding: 10px;"></div>
-                        <hr class="border-gray mt-2 mb-2">
-
-                        <div class="grid-2 gap-2 mt-2">
-                            <div class="input-group"><label>Название</label><input type="text" id="foodName" placeholder="Блюдо"></div>
-                            <div class="input-group"><label>Ккал</label><input type="number" id="foodKcal" placeholder="0"></div>
-                        </div>
-                        <div class="grid-3 gap-2 mt-2">
-                            <div class="input-group"><label>Б (г)</label><input type="number" id="foodB" placeholder="0"></div>
-                            <div class="input-group"><label>Ж (г)</label><input type="number" id="foodF" placeholder="0"></div>
-                            <div class="input-group"><label>У (г)</label><input type="number" id="foodU" placeholder="0"></div>
-                        </div>
-                        
-                        <div id="foodImageStatus" class="text-sm mt-2 font-bold"></div>
-                        
-                        <button class="btn btn-success mt-2" onclick="saveHybridFood()">✅ Записать в итог</button>
-                    </div>
-
-                    <div class="card mt-2 text-center">
-                        <h3>Съедено за день:</h3>
-                        <p id="foodTotalKcal" class="text-primary font-bold" style="font-size: 1.5rem">0 ккал</p>
-                        <div class="grid-3 gap-1 mt-2">
-                            <div class="p-2 border-gray"><div class="text-sm text-muted">Белки</div><div id="foodTotalB" class="font-bold">0г</div></div>
-                            <div class="p-2 border-gray"><div class="text-sm text-muted">Жиры</div><div id="foodTotalF" class="font-bold">0г</div></div>
-                            <div class="p-2 border-gray"><div class="text-sm text-muted">Углеводы</div><div id="foodTotalU" class="font-bold">0г</div></div>
-                        </div>
-                    </div>
-                </div>
-                <!-- СОН И ЦНС -->
-                <div id="module-sleep" class="module">
-                    <h2>🛌 Дневник Сна & ЦНС</h2>
-                    <div class="card flex-col gap-2">
-                        <div class="grid-2 gap-2">
-                            <div class="input-group">
-                                <label>Отбой</label>
-                                <input type="time" id="sleepStart">
-                            </div>
-                            <div class="input-group">
-                                <label>Подъем</label>
-                                <input type="time" id="sleepEnd">
-                            </div>
-                        </div>
-                        <button class="btn btn-primary mt-2" onclick="saveSleep()">Зафиксировать сон</button>
-                        <div id="sleepStatus" class="mt-2 text-center text-sm border-gray" style="padding-top: 8px;"></div>
-                    </div>
-                    
-                    <div class="card flex-col gap-2 mt-2">
-                        <div class="flex" style="justify-content: space-between; align-items: center;">
-                            <h3>🔴 ЦНС / НАСТРОЕНИЕ (Триггеры)</h3>
-                            <button class="btn btn-outline text-sm" id="editCnsBtn" onclick="toggleEditCns()">✏️ Редакт.</button>
-                        </div>
-                        <div id="cnsTriggersContainer" class="flex gap-2 mt-2" style="flex-wrap: wrap;"></div>
-                        <div id="addCnsBlock" style="display:none;" class="mt-2 flex gap-2">
-                            <input type="text" id="newCnsInput" placeholder="Новый триггер..." style="flex:1;">
-                            <button class="btn btn-primary" style="width: auto;" onclick="addCnsTrigger()">+</button>
-                        </div>
-                    </div>
-
-                    <div class="card flex-col gap-2 mt-2">
-                        <div class="flex" style="justify-content: space-between; align-items: center;">
-                            <h3>⚡ СТРЕСС</h3>
-                            <button class="btn btn-outline text-sm" id="editStressBtn" onclick="toggleEditStress()">✏️ Редакт.</button>
-                        </div>
-                        <div id="stressTriggersContainer" class="flex gap-2 mt-2" style="flex-wrap: wrap;"></div>
-                        <div id="addStressBlock" style="display:none;" class="mt-2 flex gap-2">
-                            <input type="text" id="newStressInput" placeholder="Новый триггер..." style="flex:1;">
-                            <button class="btn btn-primary" style="width: auto;" onclick="addStressTrigger()">+</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- ТРЕНИРОВКИ -->
-                <div id="module-workout" class="module">
-                    <h2>🏋️ Autoregulated Workout</h2>
-                    <div class="card mt-2">
-                        <h3 id="workoutModeTitle" class="mb-2">Режим: НОРМА</h3>
-                        <p class="text-muted text-sm mb-2">ИЗО-Таймер / Гиробол</p>
-                        <div id="isoTimerDisplay" class="stopwatch text-center mb-2" style="font-size: 32px; padding: 20px; border-radius: 8px; background: var(--nav-bg);">
-                            ГОТОВ?
-                        </div>
-                        <div class="grid-3 gap-2">
-                            <button class="btn btn-primary text-sm" id="iso30btn" onclick="startIsoTimer(45, 'expander')">Эспандер 45с</button>
-                            <button class="btn btn-primary text-sm" id="iso60btn" onclick="startIsoTimer(60, 'gyroball')">Гиро 60с</button>
-                            <button class="btn btn-primary text-sm" id="isoDbbtn" onclick="startIsoTimer(30, 'dumbbells')">Гантели 30с</button>
-                            <button class="btn btn-danger text-sm" onclick="stopIsoTimer()" style="grid-column: span 3;">Стоп таймер</button>
-                        </div>
-                        
-                        <hr class="border-gray">
-                        <h3>Блок 1: Эспандер Cornix</h3>
-                        <div class="flex gap-2 align-center mt-2 mb-2">
-                            <button class="btn btn-outline" onclick="addRep()">+1 Подход</button>
-                            <span id="repCounter" class="font-bold text-success" style="font-size: 24px;">0 / 3</span>
-                        </div>
-
-                        <div id="workoutBlock2">
-                            <hr class="border-gray">
-                            <h3>Блок 2: Изоляция (Гантель 4кг)</h3>
-                            <ul class="text-left text-muted list-none text-sm">
-                                <li>✔️ Молотковый подъем (3х15)</li>
-                                <li>✔️ Сгибание/разгибание запястья (3х15)</li>
-                            </ul>
-                        </div>
-                        
-                        <div id="workoutBlock3">
-                            <hr class="border-gray">
-                            <h3>Блок 3: База (Гантели 2х4кг)</h3>
-                            <ul class="text-left text-muted list-none text-sm">
-                                <li>✔️ Бицепс / Молот (по 30)</li>
-                                <li>✔️ Жим на плечи, статика (25 сек)</li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- ДЫХАНИЕ / SOS -->
-                <!-- CHAT MODULE -->
-                <div id="module-chat" class="module">
-                    <h2>💬 ИИ-Тренер</h2>
-                    <button class="btn btn-primary mt-2 mb-2 w-100" onclick="generate14DayDigest()" style="width: 100%;">📊 Сгенерировать отчёт за 14 дней</button>
-                    <div class="card flex-col gap-2 mt-2" style="height: 60vh; display: flex; flex-direction: column;">
-                        <div id="chatHistory" style="flex: 1; overflow-y: auto; background: var(--bg); padding: 10px; border-radius: 8px; display: flex; flex-direction: column; gap: 10px;">
-                            <div class="text-muted text-sm text-center">Тренер готов. Задай вопрос о своем состоянии.</div>
-                        </div>
-                        <div class="flex gap-2">
-                            <input type="text" id="chatInput" class="input flex-1" placeholder="Спроси тренера...">
-                            <button class="btn btn-primary" onclick="sendChatMessage()">🚀</button>
-                        </div>
-                    </div>
-                </div>
-                <div id="module-sos" class="module">
-                    <h2>🆘 Триггеры и SOS</h2>
-                    <div class="grid-2 gap-2 mb-2">
-                        <button class="btn btn-danger text-sm" onclick="showSosCategory('panic')">🚨 Паника / Дроны</button>
-                        <button class="btn btn-outline text-sm" onclick="showSosCategory('alcohol')">🍺 Алкоголь</button>
-                        <button class="btn btn-outline text-sm" style="grid-column: span 2;" onclick="showSosCategory('drugs')">💊 ПАВ / Отхода</button>
-                    </div>
-
-                    <div id="sosSubContainer" class="card bg-dark text-white flex-col gap-2" style="display:none;">
-                        <h3 id="sosSubTitle" class="text-center text-primary" style="margin-bottom: 0;"></h3>
-                        <div id="sosSubButtons" class="flex-col gap-2 mt-2"></div>
-                        <div id="sosAdvice" class="mt-2 text-sm text-left" style="display:none; padding: 15px; border: 1px solid var(--border); border-radius: 8px; background: #1a1a1a; line-height: 1.5;"></div>
-                        
-                        <div id="sosBreathingBlock" style="display:none;" class="text-center mt-2">
-                            <hr class="border-gray mt-2 mb-2">
-                            <h3>Физиологический вздох</h3>
-                            <p class="text-muted text-sm mb-2">2 коротких вдоха, 1 долгий выдох.</p>
-                            <div class="breathing-animator" style="margin: 0 auto;" id="breathSighCircle">ВЗДОХ</div>
-                            <button class="btn btn-primary mt-2" onclick="startSighAnimation()">Старт цикла</button>
-                            <button class="btn btn-danger mt-2" onclick="stopSighAnimation()">Стоп</button>
-                            <hr class="border-gray mt-2 mb-2">
-                            <h3>NSDR (Yoga Nidra)</h3>
-                            <button class="btn btn-outline text-success" onclick="startNSDR()">Запустить таймер (15 мин)</button>
-                            <p id="nsdrDisplay" class="mt-2 font-bold text-main" style="display:none; font-size: 24px;">15:00</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- БИОМЕТРИЯ -->
-                <div id="module-biometrics" class="module">
-                    <h2>🧬 Биометрия & ЦНС</h2>
-                    <div class="card flex-col gap-2">
-                        <h3>Объективный Body Battery</h3>
-                        <p class="text-muted text-sm mb-2">Оценка HRV (Камера-PPG), PVT-тест и Stroop-тест (когнитивная гибкость).</p>
-                        
-                        <div class="grid-2 gap-2 mb-2">
-                            <button class="btn btn-outline" onclick="startHRV()">🩸 Старт HRV (PPG)</button>
-                            <button class="btn btn-primary" onclick="startPVT()" id="pvtButton">⚡ PVT (Psychomotor Vigilance Task)</button>
-                            <button class="btn btn-outline" onclick="showToast('Stroop-тест скоро будет добавлен')">🧠 Stroop-тест</button>
-                        </div>
-                        
-                        <div id="hrvResult" class="text-center font-bold text-main" style="display:none; padding: 10px; border: 1px solid var(--border); border-radius: 8px;"></div>
-                        <div style="background: rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; margin-top: 10px;">
-                            <span class="text-xs text-muted">📊 Personal Baseline (180 дней):</span>
-                            <div class="flex justify-between mt-1">
-                                <span class="text-xs font-bold text-success">HRV норм: 38-52ms</span>
-                                <span class="text-xs font-bold text-success">PVT норм: < 320ms</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- ФАРМАКОКИНЕТИКА -->
-                <div id="module-pharma" class="module">
-                    <h2>☕ Фармакокинетика</h2>
-                    <div class="card flex-col gap-2">
-                        <h3>Уровень Кофеина</h3>
-                        <p class="text-muted text-sm mb-2">Период полувыведения: ~5 часов</p>
-                        
-                        <div class="battery-bar">
-                            <div class="battery-fill bg-water" id="caffeineBar" style="width: 0%; background: #6f4e37;"></div>
-                        </div>
-                        <p class="text-center font-bold mt-2"><span id="caffeineLevel">0</span> мг активного кофеина</p>
-                        
-                        <div id="caffeineWarning" class="text-danger text-center font-bold text-sm mt-2" style="display:none;">
-                            Внимание! Высокий уровень кофеина. Активируй 15-мин NSDR перед сном!
-                        </div>
-                        
-                        <div class="grid-2 gap-2 mt-2">
-                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Каша с бананом', 12, 3, 75, 400)">Каша с бананом</button>
-                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Творог', 36, 10, 5, 250)">Творог</button>
-                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Жареная печень', 35, 12, 10, 290)">Жареная печень</button>
-                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Яйца', 26, 22, 2, 310)">Яйца</button>
+                        <div class="grid-4 gap-2 mt-2">
+                            <button class="btn btn-outline text-sm" onclick="addCaffeine(50)">+50мг</button>
+                            <button class="btn btn-outline text-sm" onclick="addCaffeine(100)">+100мг</button>
+                            <button class="btn btn-outline text-sm" onclick="addCaffeine(150)">+150мг</button>
+                            <button class="btn btn-outline text-sm" onclick="addCaffeine(200)">+200мг</button>
                         </div>
                     </div>
                     

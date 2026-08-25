@@ -186,6 +186,15 @@ window.updateFoodUI = () => {
     if(document.getElementById("kcalCount")) document.getElementById("kcalCount").innerText = AppState.food.totalKcal;
 };
 
+window.addCustomWater = () => {
+    const input = document.getElementById("customWaterInput");
+    const ml = parseInt(input.value);
+    if (!isNaN(ml) && ml > 0) {
+        addWater(ml);
+        input.value = '';
+    }
+};
+
 window.addWater = (ml) => {
     if (window.haptic) window.haptic(30);
     AppState.water += ml;
@@ -315,3 +324,42 @@ const checkAutoBackup = () => {
 
 setTimeout(checkAutoBackup, 5000); // Check 5 seconds after load
 
+
+
+window.exportMedicalReportTxt = () => {
+    if (window.haptic) window.haptic(30);
+    
+    let report = "\uFEFF"; // UTF-8 BOM
+    report += "=== МЕДИЧНИЙ ЗВІТ / ПАЦІЄНТ ===\n\n";
+    report += "Дата генерації: " + new Date().toLocaleString("uk-UA") + "\n";
+    report += "Група крові: " + (document.getElementById("dossierBlood") ? document.getElementById("dossierBlood").value : "") + "\n";
+    report += "Хронічні стани: " + (document.getElementById("dossierConditions") ? document.getElementById("dossierConditions").value : "") + "\n";
+    report += "Алергії: " + (document.getElementById("dossierAllergies") ? document.getElementById("dossierAllergies").value : "") + "\n\n";
+    
+    report += "--- ПОТОЧНИЙ СТАН (ЦНС / BODY BATTERY) ---\n";
+    report += "Оцінка ресурсу: " + AppState.bodyBattery + " / 100\n";
+    
+    report += "\n--- БАДИ ТА ПРЕПАРАТИ (РЕГУЛЯРНИЙ ПРИЙОМ) ---\n";
+    for(let k in AppState.supps) {
+        if(AppState.supps[k]) {
+            report += "- " + SUPP_NAMES[k] + "\n";
+        }
+    }
+    
+    report += "\n--- ОСТАННІ ПОДІЇ ТА ТРИГЕРИ ---\n";
+    const recent = AppState.logs.slice(-10).reverse();
+    recent.forEach(log => {
+        report += "[" + new Date(log.ts).toLocaleString("uk-UA") + "] " + log.type + " | " + JSON.stringify(log.payload || {}) + "\n";
+    });
+
+    const blob = new Blob([report], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = "medical_report_" + new Date().toISOString().slice(0,10) + ".txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Звіт збережено (UTF-8)");
+};

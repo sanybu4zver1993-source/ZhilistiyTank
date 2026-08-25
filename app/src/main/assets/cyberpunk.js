@@ -400,6 +400,7 @@ window.importStegoBackup = (event) => {
 
 const getPotIngredients = () => {
     return {
+        
         'горох': { b: 20, f: 2, u: 53, k: 290 },
         'пшеничка': { b: 11, f: 1, u: 67, k: 320 },
         'перловка': { b: 9, f: 1, u: 73, k: 320 },
@@ -409,12 +410,29 @@ const getPotIngredients = () => {
         'курица': { b: 18, f: 10, u: 0, k: 170 },
         'печень': { b: 19, f: 6, u: 1, k: 140 },
         'овощи': { b: 2, f: 0, u: 6, k: 30 },
+        'яйцо': { b: 13, f: 11, u: 1, k: 155 },
+        'яйца': { b: 13, f: 11, u: 1, k: 155 },
+        'творог': { b: 16, f: 5, u: 3, k: 121 },
+        'батон': { b: 8, f: 3, u: 51, k: 265 },
+        'хлеб': { b: 7, f: 1.5, u: 40, k: 210 },
+        'колбаса': { b: 12, f: 22, u: 1, k: 250 },
+
         'грибы': { b: 3, f: 0.5, u: 3, k: 27 },
         'молоко': { b: 3, f: 2.5, u: 4.7, k: 52 },
         'изюм': { b: 3, f: 0.5, u: 71, k: 299 },
         'банан': { b: 1.5, f: 0.1, u: 22, k: 89 },
         'орехи': { b: 15, f: 65, u: 7, k: 654 },
         'яблоко': { b: 0.4, f: 0.4, u: 11, k: 52 },
+        'мёд': { b: 0.8, f: 0, u: 81, k: 329 },
+        'медовая смесь (суперфуд)': { b: 8, f: 15, u: 55, k: 395 },
+        'трутневое молочко': { b: 10, f: 2, u: 5, k: 78 },
+        'свинина (мякоть)': { b: 16, f: 20, u: 0, k: 244 },
+        'свиной язык': { b: 16, f: 16, u: 0, k: 208 },
+        'рис вареный': { b: 2.5, f: 0.3, u: 28, k: 130 },
+        'гречка вареная': { b: 4, f: 1, u: 21, k: 110 },
+        'манка': { b: 10.3, f: 1, u: 73.3, k: 333 },
+        'чечевица': { b: 24, f: 1.5, u: 46, k: 310 },
+
         ...(AppState.customPotIngredients || {})
     };
 };
@@ -787,4 +805,69 @@ window.toggleSupp = (key) => {
     
     saveUIState();
     if(window.renderSupps) window.renderSupps();
+};
+
+
+window.autoParseFood = () => {
+    const text = document.getElementById("smartFoodInput").value.toLowerCase();
+    if (!text) return;
+
+    let totalB = 0, totalF = 0, totalU = 0, totalKcal = 0;
+    const ingredients = getPotIngredients();
+    
+    // Regex matches: "150г каши", "каша 150", "2 яйца", "яйца 2шт"
+    for (let key in ingredients) {
+        if (text.includes(key)) {
+            // attempt to find weight
+            const regexStr = "(\\d+)\\s*(?:г|грамм|гр)?\\s*" + key + "|" + key + "\\s*(?:—|-)?\\s*(\\d+)\\s*(?:г|грамм|гр)?";
+            const match = text.match(new RegExp(regexStr));
+            let weight = 0;
+            if (match) {
+                weight = parseFloat(match[1] || match[2]);
+            } else if (key === 'яйца' || key === 'яйцо') {
+                const pMatch = text.match(new RegExp("(\\d+)\\s*(?:шт)?\\s*" + key + "|" + key + "\\s*(\\d+)"));
+                if (pMatch) {
+                    weight = parseFloat(pMatch[1] || pMatch[2]) * 55; // avg egg weight
+                }
+            } else {
+                weight = 100; // default to 100g if no weight specified
+            }
+            
+            if (weight > 0) {
+                const data = ingredients[key];
+                totalB += (data.b * weight / 100);
+                totalF += (data.f * weight / 100);
+                totalU += (data.u * weight / 100);
+                totalKcal += (data.k * weight / 100);
+            }
+        }
+    }
+    
+    document.getElementById("foodName").value = text.substring(0, 30);
+    document.getElementById("foodB").value = Math.round(totalB);
+    document.getElementById("foodF").value = Math.round(totalF);
+    document.getElementById("foodU").value = Math.round(totalU);
+    document.getElementById("foodKcal").value = Math.round(totalKcal);
+};
+
+window.startVoiceFood = () => {
+    if (!('webkitSpeechRecognition' in window)) {
+        showToast("Голосовой ввод не поддерживается");
+        return;
+    }
+    const recognition = new webkitSpeechRecognition();
+    recognition.lang = 'ru-RU';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = function(event) {
+        const transcript = event.results[0][0].transcript;
+        document.getElementById("smartFoodInput").value = transcript;
+        autoParseFood();
+    };
+    recognition.onerror = function(event) {
+        showToast("Ошибка микрофона: " + event.error);
+    };
+    recognition.start();
+    showToast("Говори...");
 };
