@@ -780,19 +780,9 @@ class WebAppInterface(
     // --- Air Raid Alerts & Weather ---
     @JavascriptInterface
     fun fetchAirAlertsAsync(alertsInUaToken: String, callbackName: String) {
-        val token = alertsInUaToken.trim()
-        if (token.isNotEmpty()) {
-            fetchHttpGetAsync(
-                urlString = "https://api.alerts.in.ua/v1/alerts/active.json",
-                bearerToken = token,
-                callbackName = callbackName
-            )
-        } else {
-            fetchHttpGetAsync(
-                urlString = "https://ubilling.net.ua/aerialalerts/",
-                bearerToken = null,
-                callbackName = callbackName
-            )
+        networkExecutor.execute {
+            val result = AirAlertHelper.fetchAlertsWithFallback(alertsInUaToken)
+            invokeJsCallback(callbackName, result)
         }
     }
 

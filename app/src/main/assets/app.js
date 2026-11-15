@@ -556,14 +556,89 @@ window.updateFoodUI = () => {
 
 // --- Chernihiv Air Raid Alerts & Weather ---
 const CITY_MAP = {
-    "Чернигов": { coords: [51.4982, 31.2893], oblast: "Чернігівська область", raionUid: "140", matchKw: "черніг" },
-    "Киев": { coords: [50.4501, 30.5234], oblast: "м. Київ", raionUid: "31", matchKw: "київ" },
-    "Сумы": { coords: [50.9077, 34.7981], oblast: "Сумська область", raionUid: "", matchKw: "сум" },
-    "Харьков": { coords: [49.9935, 36.2304], oblast: "Харківська область", raionUid: "", matchKw: "харків" },
-    "Днепр": { coords: [48.4647, 35.0462], oblast: "Дніпропетровська область", raionUid: "", matchKw: "дніпр" },
-    "Одесса": { coords: [46.4825, 30.7233], oblast: "Одеська область", raionUid: "", matchKw: "одес" },
-    "Львов": { coords: [49.8397, 24.0297], oblast: "Львівська область", raionUid: "", matchKw: "львів" }
+    "Чернигов": {
+        coords: [51.4982, 31.2893],
+        oblast: "Чернігівська область",
+        raionUid: "140",
+        matchKw: "черніг",
+        sirenCommunityNames: ["чернігівська територіальна громада", "м. чернігів"],
+        sirenDistrictNames: ["чернігівський район"],
+        sirenStateNames: ["чернігівська область"]
+    },
+    "Киев": {
+        coords: [50.4501, 30.5234],
+        oblast: "м. Київ",
+        raionUid: "31",
+        matchKw: "київ",
+        sirenCommunityNames: ["м. київ"],
+        sirenDistrictNames: [],
+        sirenStateNames: ["м. київ"]
+    },
+    "Сумы": {
+        coords: [50.9077, 34.7981],
+        oblast: "Сумська область",
+        raionUid: "",
+        matchKw: "сум",
+        sirenCommunityNames: ["сумська територіальна громада", "м. суми"],
+        sirenDistrictNames: ["сумський район"],
+        sirenStateNames: ["сумська область"]
+    },
+    "Харьков": {
+        coords: [49.9935, 36.2304],
+        oblast: "Харківська область",
+        raionUid: "",
+        matchKw: "харків",
+        sirenCommunityNames: ["харківська територіальна громада", "м. харків"],
+        sirenDistrictNames: ["харківський район"],
+        sirenStateNames: ["харківська область"]
+    },
+    "Днепр": {
+        coords: [48.4647, 35.0462],
+        oblast: "Дніпропетровська область",
+        raionUid: "",
+        matchKw: "дніпр",
+        sirenCommunityNames: ["дніпровська територіальна громада", "м. дніпро"],
+        sirenDistrictNames: ["дніпровський район"],
+        sirenStateNames: ["дніпропетровська область"]
+    },
+    "Одесса": {
+        coords: [46.4825, 30.7233],
+        oblast: "Одеська область",
+        raionUid: "",
+        matchKw: "одес",
+        sirenCommunityNames: ["одеська територіальна громада", "м. одеса"],
+        sirenDistrictNames: ["одеський район"],
+        sirenStateNames: ["одеська область"]
+    },
+    "Львов": {
+        coords: [49.8397, 24.0297],
+        oblast: "Львівська область",
+        raionUid: "",
+        matchKw: "львів",
+        sirenCommunityNames: ["львівська територіальна громада", "м. львів"],
+        sirenDistrictNames: ["львівський район"],
+        sirenStateNames: ["львівська область"]
+    }
 };
+
+const SIREN_THREAT_LABELS = {
+    AIR: "Воздушная тревога",
+    ARTILLERY: "Артобстрел",
+    URBAN_FIGHTS: "Уличные бои",
+    CHEMICAL: "Хим. угроза",
+    NUCLEAR: "Радиац. угроза",
+    INFO: "Предупреждение"
+};
+
+function formatAlertTimestamp(raw) {
+    if (!raw) return new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) {
+        return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) +
+            " · " + d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+    }
+    return String(raw);
+}
 
 function getCityInfo() {
     const key = (AppState.dossier && AppState.dossier.region) || "Чернигов";
@@ -578,10 +653,18 @@ window.refreshAirAlerts = (manual = false) => {
     if (window.AndroidBridge && window.AndroidBridge.fetchAirAlertsAsync) {
         window.AndroidBridge.fetchAirAlertsAsync(token, cbName);
     } else {
-        fetch("https://ubilling.net.ua/aerialalerts/")
-            .then(r => r.text())
-            .then(body => window[cbName](JSON.stringify({ ok: true, body })))
-            .catch(err => window[cbName](JSON.stringify({ ok: false, error: err.message })));
+        fetch("https://siren.pp.ua/api/v3/alerts")
+            .then(r => {
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.text();
+            })
+            .then(body => window[cbName](JSON.stringify({ ok: true, source: "siren.pp.ua", body })))
+            .catch(() => {
+                fetch("https://ubilling.net.ua/aerialalerts/")
+                    .then(r => r.text())
+                    .then(body => window[cbName](JSON.stringify({ ok: true, source: "ubilling.net.ua", body })))
+                    .catch(err => window[cbName](JSON.stringify({ ok: false, error: err.message })));
+            });
     }
 };
 
@@ -597,10 +680,14 @@ window.onAirAlertsLoaded = (wrapperStr) => {
         let isActive = false;
         let scopeLabel = `${city.cityName} (обл.)`;
         let changed = "—";
+        let threatText = "";
+        let extraNote = wrapper.note ? String(wrapper.note) : "";
+        let sourceTag = wrapper.source || "";
 
-        if (Array.isArray(data.alerts)) {
+        if (sourceTag === "alerts.in.ua" || Array.isArray(data.alerts)) {
             // alerts.in.ua v1 format (city/raion/hromada precision)
-            const matched = data.alerts.filter(a => {
+            sourceTag = sourceTag || "alerts.in.ua";
+            const matched = (data.alerts || []).filter(a => {
                 const title = String(a.location_title || "").toLowerCase();
                 const uid = String(a.location_uid || "");
                 return (city.raionUid && uid === city.raionUid) ||
@@ -608,22 +695,93 @@ window.onAirAlertsLoaded = (wrapperStr) => {
             });
             isActive = matched.length > 0;
             scopeLabel = `г. ${city.cityName}`;
-            changed = matched[0]?.started_at || new Date().toLocaleTimeString("ru-RU");
+            changed = formatAlertTimestamp(matched[0]?.started_at);
+        } else if (sourceTag === "siren.pp.ua" || Array.isArray(data) || Array.isArray(data.activeAlerts)) {
+            // siren.pp.ua / ukrainealarm v3 format (community / district / oblast precision)
+            sourceTag = "siren.pp.ua";
+            const entries = Array.isArray(data) ? data : (data.activeAlerts || []);
+            const idx = (wrapper.regionsIndex && wrapper.regionsIndex[city.cityName]) || {};
+
+            const activeEntries = entries.filter(e => {
+                if (!e) return false;
+                if (Array.isArray(e.activeAlerts)) return e.activeAlerts.length > 0;
+                return e.active !== false;
+            });
+
+            const matchCommunity = e => {
+                const rid = String(e.regionId || "");
+                const rname = String(e.regionName || "").toLowerCase().trim();
+                return (idx.communityId && rid === String(idx.communityId)) ||
+                    city.sirenCommunityNames.includes(rname);
+            };
+            const matchDistrict = e => {
+                const rid = String(e.regionId || "");
+                const rname = String(e.regionName || "").toLowerCase().trim();
+                return (idx.districtId && rid === String(idx.districtId)) ||
+                    city.sirenDistrictNames.includes(rname);
+            };
+            const matchState = e => {
+                const rid = String(e.regionId || "");
+                const rname = String(e.regionName || "").toLowerCase().trim();
+                return (idx.stateId && rid === String(idx.stateId)) ||
+                    city.sirenStateNames.includes(rname);
+            };
+
+            const commHit = activeEntries.find(matchCommunity);
+            const distHit = !commHit ? activeEntries.find(matchDistrict) : null;
+            const stateHit = (!commHit && !distHit) ? activeEntries.find(matchState) : null;
+
+            const stateSubAlerts = stateHit && Array.isArray(stateHit.activeAlerts) ? stateHit.activeAlerts : [];
+            const stateWideAlert = Boolean(stateHit) && (
+                stateSubAlerts.length === 0 ||
+                stateSubAlerts.some(a =>
+                    !a.regionType ||
+                    String(a.regionType).toLowerCase() === "state" ||
+                    String(a.regionId || "") === String(stateHit.regionId || "")
+                )
+            );
+
+            const hit = commHit || distHit || (stateWideAlert ? stateHit : null);
+            if (hit) {
+                isActive = true;
+                scopeLabel = commHit
+                    ? `г. ${city.cityName} (громада)`
+                    : (distHit ? `${city.cityName} / р-н` : `${city.cityName} (вся область)`);
+                const sub = Array.isArray(hit.activeAlerts) && hit.activeAlerts.length > 0 ? hit.activeAlerts : [hit];
+                const rawTypes = sub.map(a => SIREN_THREAT_LABELS[a.type] || a.type).filter(Boolean);
+                const uniqTypes = Array.from(new Set(rawTypes));
+                if (uniqTypes.length > 0) threatText = uniqTypes.join(", ");
+                changed = formatAlertTimestamp(sub[0]?.lastUpdate || hit.lastUpdate || hit.changed);
+            } else {
+                isActive = false;
+                scopeLabel = `г. ${city.cityName} (громада)`;
+                changed = formatAlertTimestamp(null);
+                if (stateHit) {
+                    const partialNote = "В области есть локальные тревоги (вне города/р-на)";
+                    extraNote = extraNote ? `${extraNote} · ${partialNote}` : partialNote;
+                }
+            }
         } else {
-            // ubilling.net.ua format
+            // ubilling.net.ua format (oblast fallback)
+            sourceTag = sourceTag || "ubilling.net.ua";
             const statesMap = data.states || data.state || data;
             const entry = statesMap[city.oblast];
             if (!entry) throw new Error(`Регион "${city.oblast}" не найден`);
             isActive = Boolean(entry.alertnow ?? entry.alert ?? entry.enabled);
-            changed = entry.changed || "—";
+            scopeLabel = `${city.cityName} (область)`;
+            changed = formatAlertTimestamp(entry.changed);
         }
 
         pill.className = "alert-pill " + (isActive ? "alert-active" : "alert-safe");
         pill.innerText = isActive ? "🚨 ТРЕВОГА" : "🟢 Отбой";
 
+        const threatLine = threatText ? ` · ${escapeHtml(threatText)}` : "";
+        const sourceLine = sourceTag ? ` · ${escapeHtml(sourceTag)}` : "";
+        const noteLine = extraNote ? `<br><span class="text-xs text-warning">${escapeHtml(extraNote)}</span>` : "";
+
         detail.innerHTML = isActive
-            ? `<span class="text-danger font-bold">АКТИВНА ТРЕВОГА: ${escapeHtml(scopeLabel)}</span><br><span class="text-xs text-muted">Обновлено: ${escapeHtml(changed)}</span>`
-            : `<span class="text-success font-bold">Тишина: ${escapeHtml(scopeLabel)}</span><br><span class="text-xs text-muted">Последний статус: ${escapeHtml(changed)}</span>`;
+            ? `<span class="text-danger font-bold">АКТИВНА ТРЕВОГА: ${escapeHtml(scopeLabel)}${threatLine}</span><br><span class="text-xs text-muted">Обновлено: ${escapeHtml(changed)}${sourceLine}</span>${noteLine}`
+            : `<span class="text-success font-bold">Тишина: ${escapeHtml(scopeLabel)}</span><br><span class="text-xs text-muted">Проверено: ${escapeHtml(changed)}${sourceLine}</span>${noteLine}`;
 
         if (isActive && lastAirAlertActive === false) {
             window.haptic([250, 100, 250]);
