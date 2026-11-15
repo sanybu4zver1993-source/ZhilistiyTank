@@ -5,253 +5,566 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Жилистый Танк</title>
     <link rel="stylesheet" href="style.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
-    <link rel="manifest" href="manifest.json">
     <script>
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('sw.js').then(reg => {
-                    console.log('SW registered!', reg);
-                }).catch(err => console.log('SW failed', err));
-            });
+        // Anti-forensics: strip noisy logs when running inside packaged WebView origin
+        if (location.hostname === 'appassets.androidplatform.net' || location.protocol === 'file:') {
+            window.console.log = function () {};
+            window.console.warn = function () {};
+            window.console.info = function () {};
         }
-    </script>
 
-    <script>
-        // FAIL-CLOSED & ANTI-FORENSICS
-        if (!location.hostname.includes('localhost') && !location.hostname.includes('127.0.0.1')) {
-            window.console.log = function(){};
-            window.console.warn = function(){};
-            window.console.info = function(){};
-            window.console.error = function(){};
-        }
-        
-        // RAM Scrubbing & Visibility Lock
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                // Clear UI to prevent snapshot leaks in Recents
-                if (document.getElementById('loginOverlay') && document.getElementById('loginOverlay').style.display === 'none') {
-                    // Temporarily hide sensitive data by throwing up the calculator
-                    document.getElementById('loginOverlay').style.display = 'flex';
-                    document.getElementById('pinModeContainer').style.display = 'none';
-                    document.getElementById('calcModeContainer').style.display = 'flex';
-                }
+        // Fail-closed lock on visibility hidden / app backgrounding
+        window.lockToStealth = function () {
+            if (window.flushVaultNow) window.flushVaultNow();
+            if (window.VaultSession) {
+                window.VaultSession.unlocked = false;
+                window.VaultSession.pin = "";
             }
-        });
-        
-        // Disable global uncaught exceptions leaking info
-        window.addEventListener('error', function (e) {
-            e.preventDefault(); // Stop default logging
-            // Fail-closed approach: If fatal error, force lock
-            if (e.message.toLowerCase().includes('crypto') || e.message.toLowerCase().includes('db')) {
-                 location.reload();
+            if (window.closeAppModal) window.closeAppModal();
+            if (window.wipeRuntimeSensitiveDom) window.wipeRuntimeSensitiveDom();
+            const overlay = document.getElementById('loginOverlay');
+            if (overlay) overlay.style.display = 'flex';
+        };
+
+        window.onAppBackgrounded = function () {
+            window.lockToStealth();
+        };
+
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) {
+                window.onAppBackgrounded();
             }
         });
     </script>
 </head>
-    <!-- LOGIN OVERLAY -->
-    <div id="loginOverlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#0f0f11; z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:white; padding: 20px; box-sizing: border-box;">
-        
-        <!-- STANDARD PIN MODE -->
-        <div id="pinModeContainer" style="display:none; flex-direction:column; align-items:center; width:100%;">
-            <h2 id="loginTitle" style="color:var(--primary); margin-bottom: 20px;">ВХОД В ТАНК</h2>
-            <div style="font-size: 32px; letter-spacing: 10px; margin-bottom: 20px; height: 40px; display: flex; gap: 10px;" id="pinDots">
-                <span>○</span><span>○</span><span>○</span><span>○</span>
+<body>
+
+    <!-- STEALTH CALCULATOR & VAULT SETUP OVERLAY -->
+    <div id="loginOverlay" class="overlay-screen">
+        <!-- First-Run Dual-PIN Vault Setup -->
+        <div id="vaultSetupContainer" style="display:none; flex-direction:column; width:100%; max-width:340px;" class="card gap-2">
+            <h2 class="text-primary text-center mb-1">🔐 Создание Крипто-Сейфа</h2>
+            <p class="text-xs text-muted text-center mb-1">
+                AES-256-GCM + TrustZone TEE. Задайте формулы/PIN для калькулятора (например: 1993+1961 и 2+2).
+            </p>
+            <div class="input-group">
+                <label>Реальный PIN (основная база)</label>
+                <input type="text" id="setupRealPin" placeholder="Напр: 1993+1961" autocomplete="off">
             </div>
-            <p id="loginMessage" class="text-muted text-sm mb-2 text-center" style="min-height: 40px;"></p>
-            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 15px; max-width: 300px; width: 100%;">
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(1)">1</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(2)">2</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(3)">3</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(4)">4</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(5)">5</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(6)">6</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(7)">7</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(8)">8</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(9)">9</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin('+')">+</button>
-                <button class="btn btn-outline" style="font-size:24px; padding: 15px;" onclick="enterPin(0)">0</button>
-                <button class="btn btn-danger" style="font-size:24px; padding: 15px;" onclick="clearPin()">C</button>
-                <button class="btn btn-primary" style="font-size:24px; padding: 15px; grid-column: span 3;" onclick="submitPin()">→</button>
+            <div class="input-group">
+                <label>Фейковый PIN (ложная база Decoy)</label>
+                <input type="text" id="setupDecoyPin" placeholder="Напр: 2+2" autocomplete="off">
             </div>
+            <div class="input-group">
+                <label>Panic Wipe PIN (мгновенный крипто-шреддинг, опц.)</label>
+                <input type="text" id="setupPanicPin" placeholder="Напр: 911*0" autocomplete="off">
+            </div>
+            <button id="btnInitVault" class="btn btn-success mt-1" onclick="completeVaultSetup()">Создать и войти</button>
         </div>
 
-        <!-- CYBERPUNK CALCULATOR MODE -->
+        <!-- Cyberpunk Stealth Calculator -->
         <div id="calcModeContainer" style="display:flex; flex-direction:column; align-items:center; width:100%; max-width:320px;">
-            <div style="width: 100%; background: #111; padding: 20px; border-radius: 8px; text-align: right; font-size: 40px; margin-bottom: 20px; min-height: 80px; overflow: hidden; font-family: monospace; color: #fff;" id="calcDisplay">
-                0
+            <div id="calcDisplay" style="width:100%; background:#11161d; border:1px solid var(--border); padding:18px; border-radius:10px; text-align:right; font-size:36px; margin-bottom:16px; min-height:76px; overflow:hidden; font-family:monospace; color:#fff;">0</div>
+            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; width:100%;">
+                <button class="btn btn-danger" style="font-size:20px;" onclick="calcInput('C')">C</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('/')">/</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('*')">×</button>
+                <button class="btn btn-outline" style="font-size:20px; color:var(--danger);" onclick="calcInput('-')">-</button>
+
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('7')">7</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('8')">8</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('9')">9</button>
+                <button class="btn btn-outline" style="font-size:20px; color:var(--success);" onclick="calcInput('+')">+</button>
+
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('4')">4</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('5')">5</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('6')">6</button>
+                <button id="calcEqBtn" class="btn btn-primary" style="font-size:22px; grid-row:span 2; height:100%;" onclick="calcEq()">=</button>
+
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('1')">1</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('2')">2</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('3')">3</button>
+
+                <button class="btn btn-outline" style="font-size:20px; grid-column:span 2;" onclick="calcInput('0')">0</button>
+                <button class="btn btn-outline" style="font-size:20px;" onclick="calcInput('.')">.</button>
             </div>
-            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 10px; width: 100%;">
-                <button class="btn btn-danger" style="font-size:20px; padding: 15px;" onclick="calcInput('C')">C</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('/')">/</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('*')">×</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px; color: var(--danger);" onclick="calcInput('-')">-</button>
-                
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('7')">7</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('8')">8</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('9')">9</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px; color: var(--success);" onclick="calcInput('+')">+</button>
-                
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('4')">4</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('5')">5</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('6')">6</button>
-                <button id="calcEqBtn" class="btn btn-primary" style="font-size:20px; padding: 15px; grid-row: span 2;" onclick="calcEq()">=</button>
-                
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('1')">1</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('2')">2</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('3')">3</button>
-                
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px; grid-column: span 2;" onclick="calcInput('0')">0</button>
-                <button class="btn btn-outline" style="font-size:20px; padding: 15px;" onclick="calcInput('.')">.</button>
+            <p id="calcHintText" class="text-muted text-xs mt-2 text-center">Удерживай '=' для оффлайн SOS-протокола</p>
+        </div>
+    </div>
+
+    <!-- UNIVERSAL IN-DOM MODAL (replaces prompt) -->
+    <div id="appModal" class="modal-backdrop">
+        <div class="modal-box">
+            <div class="flex justify-between align-center mb-2">
+                <h3 id="appModalTitle" style="margin:0;">Меню</h3>
+                <button class="btn btn-outline btn-sm" style="width:auto;" onclick="closeAppModal()">✖</button>
             </div>
-            <p class="text-muted text-xs mt-2">Cyberpunk Mode. Hold '=' for offline SOS.</p>
+            <div id="appModalBody"></div>
         </div>
     </div>
 
     <div class="app-container">
         <header>
-            <h1>Жилистый Танк v4.0 🦾</h1>
+            <div class="header-top">
+                <h1>Жилистый Танк v4.2 🦾</h1>
+                <button class="btn btn-outline btn-sm" style="width:auto;" onclick="lockToStealth()" title="Скрыть">🔒 Скрыть</button>
+            </div>
             <div class="status-bar" id="statusBar">
-                <span id="batteryStatus">🔋 Загрузка...</span>
-                <span id="weatherStatus">🌤 Локация не задана</span>
+                <span id="batteryStatus">🔋 ЦНС: --</span>
+                <button id="airAlertStatus" class="alert-pill" onclick="refreshAirAlerts(true)">📡 Радар тревог...</button>
+                <span id="weatherStatus" onclick="refreshWeather(true)" style="cursor:pointer;">🌤 Чернигов...</span>
             </div>
         </header>
+
         <main id="mainContent">
-            <!-- Navigation -->
-            <nav class="nav-grid">
-                <button class="nav-btn" onclick="showModule('dashboard')">🎛 Главная</button>
-                <button class="nav-btn" onclick="showModule('dossier')">🗃 Досье</button>
-                <button class="nav-btn" onclick="showModule('nutrition')">🍗 БЖУ</button>
-                <button class="nav-btn" onclick="showModule('water')">💧 Вода</button>
-                <button class="nav-btn" onclick="showModule('sleep')">🛌 Сон & ЦНС</button>
-                <button class="nav-btn" onclick="showModule('workout')">🏋️ Тренировки</button>
-                <button class="nav-btn" onclick="showModule('chat')">💬 Тренер</button>
-                <button class="nav-btn" onclick="showModule('biometrics')">🧬 Биометрия (PVT)</button>
-                <button class="nav-btn" onclick="showModule('pharma')">☕ Фарма</button>
-                <button class="nav-btn" onclick="showModule('insights')">🧠 Инсайты</button>
-                <button class="nav-btn" onclick="showModule('guide')">📚 Справочник</button>
-                <button class="nav-btn" onclick="showModule('share')">🥷 Анон. Карточка</button>
-                <button class="nav-btn" onclick="showModule('donate')">🥩 Шашлычок</button>
-                <button class="nav-btn cyberpunk-only" onclick="showModule('stegano')">🖼 Стеганография</button>
-                <button class="nav-btn cyberpunk-only" onclick="showModule('settings')">⚙️ API Ключи</button>
-                <button class="nav-btn" onclick="showModule('qr')">📲 QR-Обмен</button>
-                <button class="nav-btn bg-danger" onclick="showModule('sos')">🆘 SOS Протоколы</button>
-                <button class="nav-btn" onclick="showModule('export')">📄 Резерв (.tank)</button>
+            <nav class="nav-grid" id="navGrid">
+                <button class="nav-btn active-nav" data-mod="dashboard" onclick="showModule('dashboard')">🎛 Главная</button>
+                <button class="nav-btn" data-mod="dossier" onclick="showModule('dossier')">🗃 Досье</button>
+                <button class="nav-btn" data-mod="nutrition" onclick="showModule('nutrition')">🍗 БЖУ</button>
+                <button class="nav-btn" data-mod="water" onclick="showModule('water')">💧 Вода</button>
+                <button class="nav-btn" data-mod="sleep" onclick="showModule('sleep')">🛌 Сон & ЦНС</button>
+                <button class="nav-btn" data-mod="workout" onclick="showModule('workout')">🏋️ Тренировки</button>
+                <button class="nav-btn" data-mod="biometrics" onclick="showModule('biometrics')">🧬 Биометрия</button>
+                <button class="nav-btn" data-mod="pharma" onclick="showModule('pharma')">☕ Фарма</button>
+                <button class="nav-btn" data-mod="chat" onclick="showModule('chat')">💬 Тренер</button>
+                <button class="nav-btn" data-mod="stegano" onclick="showModule('stegano')">🖼 Стего & QR</button>
+                <button class="nav-btn" data-mod="settings" onclick="showModule('settings')">⚙️ Настройки</button>
+                <button class="nav-btn bg-danger" data-mod="sos" onclick="showModule('sos')">🆘 SOS</button>
             </nav>
 
             <div id="modulesContainer">
-                
-                <!-- ГЛАВНАЯ (DASHBOARD) -->
+
+                <!-- 1. ГЛАВНАЯ (DASHBOARD) -->
                 <div id="module-dashboard" class="module active">
                     <h2>🎛 Оперативная сводка</h2>
-                    
-                    <div class="card mb-2">
-                        <h3>Активность (Heatmap)</h3>
-                        <div class="heatmap-grid" id="heatmapGrid"></div>
+
+                    <div id="airAlertCard" class="card mb-2">
+                        <div class="flex justify-between align-center mb-1">
+                            <h3 style="margin:0;">🚨 Воздушная тревога</h3>
+                            <button class="btn btn-outline btn-sm" style="width:auto;" onclick="refreshAirAlerts(true)">🔄 Обновить</button>
+                        </div>
+                        <p id="airAlertDetail" class="text-sm text-muted">Проверка статуса по Черниговской области...</p>
                     </div>
 
                     <div class="card mb-2">
                         <h3>🔋 Ресурс ЦНС: <span id="dashBatteryText" class="text-success">--/100</span></h3>
-                        <div class="battery-bar mt-2 mb-2"><div class="battery-fill" id="dashBatteryFill" style="width: 0%"></div></div>
-                        <div id="sosSuggestion" class="text-danger text-sm font-bold" style="display:none; padding-top:8px; border-top: 1px solid var(--border);">
-                        </div>
+                        <div class="battery-bar mt-1 mb-2"><div class="battery-fill" id="dashBatteryFill" style="width: 0%"></div></div>
+                        <div id="sosSuggestion" class="text-danger text-sm font-bold mb-2" style="display:none;"></div>
+                        <p class="text-xs text-muted mb-1">Быстрая фиксация триггера стресса:</p>
+                        <div id="cnsTriggerChips" class="flex flex-wrap gap-1"></div>
+                    </div>
+
+                    <div class="card mb-2">
+                        <h3>Активность (14 дней)</h3>
+                        <div class="heatmap-grid" id="heatmapGrid"></div>
                     </div>
 
                     <div class="card">
                         <h3>💊 Стек БАДов на сегодня</h3>
-                        <div id="quickSuppsList" class="flex-col gap-2 mt-2"></div>
+                        <div id="quickSuppsList" class="flex-col gap-2 mt-1"></div>
                     </div>
                 </div>
-                
-                <!-- ДОСЬЕ (МАСТЕР-ПРОФИЛЬ) -->
+
+                <!-- 2. ДОСЬЕ -->
                 <div id="module-dossier" class="module">
                     <h2>🗃 Личное Досье</h2>
-<button class="btn btn-outline mb-2" style="border-color: #9b59b6; color: #9b59b6;" onclick="exportMedicalReportTxt()">📄 Вивантажити мед. звіт (.txt)</button>
+                    <button class="btn btn-outline mb-2" style="border-color:#9b59b6; color:#c39bd3;" onclick="exportMedicalReportTxt()">📄 Вивантажити мед. звіт (.txt)</button>
                     <div class="card flex-col gap-2">
-                        <p class="text-muted text-sm mb-2">Эти данные локальны. Они нужны для точных расчетов и контекста ИИ-тренера.</p>
-                        
-                        <label class="text-sm">Год рождения</label>
-                        <input type="number" id="dossierYear" placeholder="Например: 1993" onchange="saveDossier()">
-                        
-                        <label class="text-sm mt-2">Рост (см) & Вес (кг)</label>
-                        <div class="flex gap-2">
-                            <input type="number" id="dossierHeight" placeholder="180" style="flex:1" onchange="saveDossier()">
-                            <input type="number" step="0.1" id="dossierWeight" placeholder="85.5" style="flex:1" onchange="saveDossier()">
+                        <p class="text-muted text-xs">Данные шифруются в Vault. Используются для БЖУ, мед-отчёта и ИИ-тренера.</p>
+
+                        <div class="grid-2 gap-2">
+                            <div class="input-group">
+                                <label>Год рождения</label>
+                                <input type="number" id="dossierYear" placeholder="1993" onchange="saveDossier()">
+                            </div>
+                            <div class="input-group">
+                                <label>Группа крови</label>
+                                <input type="text" id="dossierBlood" placeholder="Напр: II (A)+ " onchange="saveDossier()">
+                            </div>
                         </div>
 
-                        <label class="text-sm mt-2">Хронические состояния / Травмы</label>
-                        <textarea id="dossierConditions" rows="2" placeholder="Гастрит, травма правого плеча..." onchange="saveDossier()"></textarea>
+                        <div class="grid-2 gap-2">
+                            <div class="input-group">
+                                <label>Рост (см)</label>
+                                <input type="number" id="dossierHeight" placeholder="180" onchange="saveDossier()">
+                            </div>
+                            <div class="input-group">
+                                <label>Вес (кг)</label>
+                                <input type="number" step="0.1" id="dossierWeight" placeholder="78.0" onchange="saveDossier()">
+                            </div>
+                        </div>
 
-                        <label class="text-sm mt-2">Текущая главная цель</label>
-                        <select id="dossierGoal" class="p-2 bg-dark text-white border-gray text-sm" style="width: 100%; border-radius: 4px;" onchange="saveDossier()">
-                            <option value="maintenance">Поддержание (Maintenance)</option>
-                            <option value="fat_loss">Сушка (Fat Loss)</option>
-                            <option value="muscle_gain">Масса (Muscle Gain)</option>
-                            <option value="rehab">Реабилитация / Восстановление ЦНС</option>
-                        </select>
+                        <div class="input-group">
+                            <label>Аллергии / Непереносимость</label>
+                            <input type="text" id="dossierAllergies" placeholder="Нет или перечислить..." onchange="saveDossier()">
+                        </div>
+
+                        <div class="input-group">
+                            <label>Хронические состояния / Травмы</label>
+                            <textarea id="dossierConditions" rows="2" placeholder="Гастрит, травма плеча..." onchange="saveDossier()"></textarea>
+                        </div>
+
+                        <div class="grid-2 gap-2">
+                            <div class="input-group">
+                                <label>Главная цель</label>
+                                <select id="dossierGoal" onchange="saveDossier()">
+                                    <option value="maintenance">Поддержание</option>
+                                    <option value="fat_loss">Сушка</option>
+                                    <option value="muscle_gain">Масса</option>
+                                    <option value="rehab">Восстановление ЦНС</option>
+                                </select>
+                            </div>
+                            <div class="input-group">
+                                <label>Норма воды (мл)</label>
+                                <input type="number" id="dossierWaterNorm" placeholder="3000" onchange="saveDossier()">
+                            </div>
+                        </div>
+
+                        <div class="input-group">
+                            <label>Регион радара тревог (точно как в alerts API)</label>
+                            <select id="dossierRegion" onchange="saveDossier(); refreshAirAlerts(true);">
+                                <option value="Чернігівська область">Чернігівська область</option>
+                                <option value="м. Київ">м. Київ</option>
+                                <option value="Київська область">Київська область</option>
+                                <option value="Сумська область">Сумська область</option>
+                                <option value="Харківська область">Харківська область</option>
+                                <option value="Дніпропетровська область">Дніпропетровська область</option>
+                                <option value="Одеська область">Одеська область</option>
+                                <option value="Львівська область">Львівська область</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
-                <!-- СМАРТ БЖУ (HYBRID) -->
+                <!-- 3. СМАРТ БЖУ И КАСТРЮЛИ -->
                 <div id="module-nutrition" class="module">
                     <h2>🍗 Гибридный ввод БЖУ</h2>
                     <div class="card flex-col gap-2">
                         <div class="flex gap-2">
-                            <textarea id="smartFoodInput" rows="2" placeholder="Напр: 150г каши, 2 яйца" style="flex: 1" oninput="autoParseFood()"></textarea>
-                            <button class="btn btn-primary" style="width: auto; padding: 0 15px;" id="btnVoiceFood" onclick="startVoiceFood()">🎤</button>
-                            <button class="btn btn-success" style="width: auto; padding: 0 15px;" onclick="document.getElementById('foodVisionInput').click()">📷</button>
+                            <textarea id="smartFoodInput" rows="2" placeholder="Напр: 200г гречки, 3 яйца, 30г медовой смеси" style="flex:1" oninput="autoParseFood()"></textarea>
+                            <button class="btn btn-primary" style="width:auto; padding:0 14px;" id="btnVoiceFood" onclick="startVoiceFood()">🎤</button>
+                            <button class="btn btn-success" style="width:auto; padding:0 14px;" onclick="document.getElementById('foodVisionInput').click()">📷</button>
                             <input type="file" id="foodVisionInput" accept="image/*" style="display:none" onchange="analyzeFoodImage(event)">
                         </div>
-                        
-                        <div class="grid-2 gap-2 mt-2">
-                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Каша с бананом', 12, 3, 75, 400)">Каша с бананом</button>
-                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Творог', 36, 10, 5, 250)">Творог</button>
-                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Жареная печень', 35, 12, 10, 290)">Жареная печень</button>
-                            <button class="btn btn-outline text-sm" onclick="applyFoodPreset('Яйца', 26, 22, 2, 310)">Яйца</button>
+
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-outline btn-sm" onclick="applyFoodPreset('Овсянка с бананом', 12, 5, 72, 390)">Каша с бананом</button>
+                            <button class="btn btn-outline btn-sm" onclick="applyFoodPreset('Творог 200г', 32, 10, 6, 242)">Творог</button>
+                            <button class="btn btn-outline btn-sm" onclick="applyFoodPreset('Жареная печень 200г', 38, 12, 4, 280)">Печень</button>
+                            <button class="btn btn-outline btn-sm" onclick="applyFoodPreset('Яйца 3 шт', 21, 18, 2, 255)">Яйца 3шт</button>
                         </div>
-                        
-                        <hr class="border-gray mt-2 mb-2">
+
+                        <hr class="border-gray">
                         <p class="text-sm font-bold text-center">🫕 МЕГА-ВАРКА (Режим Кастрюли)</p>
-                        <div class="grid-4 gap-2 mt-2">
-                            <button class="btn btn-outline text-sm" onclick="addCaffeine(50)">+50мг</button>
-                            <button class="btn btn-outline text-sm" onclick="addCaffeine(100)">+100мг</button>
-                            <button class="btn btn-outline text-sm" onclick="addCaffeine(150)">+150мг</button>
-                            <button class="btn btn-outline text-sm" onclick="addCaffeine(200)">+200мг</button>
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-outline btn-sm" style="border-color:#2ecc71; color:#2ecc71;" onclick="openPotModal('green')">🟢 Зеленая (3л)</button>
+                            <button class="btn btn-outline btn-sm" style="border-color:#f1c40f; color:#f1c40f;" onclick="openPotModal('white')">🌼 Белая (2л)</button>
                         </div>
+                        <div id="potCalculator" class="card" style="display:none; background:#11161d; padding:10px;"></div>
+                        <hr class="border-gray">
+
+                        <div class="grid-2 gap-2">
+                            <div class="input-group"><label>Название</label><input type="text" id="foodName" placeholder="Блюдо"></div>
+                            <div class="input-group"><label>Ккал</label><input type="number" id="foodKcal" placeholder="0"></div>
+                        </div>
+                        <div class="grid-3 gap-2">
+                            <div class="input-group"><label>Белки (г)</label><input type="number" id="foodB" placeholder="0"></div>
+                            <div class="input-group"><label>Жиры (г)</label><input type="number" id="foodF" placeholder="0"></div>
+                            <div class="input-group"><label>Углеводы (г)</label><input type="number" id="foodU" placeholder="0"></div>
+                        </div>
+
+                        <div id="foodImageStatus" class="text-sm font-bold"></div>
+                        <button class="btn btn-success" onclick="saveHybridFood()">✅ Записать в итог</button>
                     </div>
-                    
-                    <div class="card flex-col gap-2 mt-2">
-                        <h3>💊 Ежедневный Стек</h3>
-                        <p class="text-muted text-sm mb-2">Отмечай прием БАДов. Остатки обновляются автоматически.</p>
-                        <div id="suppsContainer" class="flex-col gap-2">
-                            <!-- JS render -->
+
+                    <div class="card mt-2 text-center">
+                        <div class="flex justify-between align-center mb-1">
+                            <h3 style="margin:0;">Съедено за сегодня</h3>
+                            <button class="btn btn-outline btn-sm" style="width:auto; color:var(--danger);" onclick="resetBJU()">Сброс дня</button>
                         </div>
-                        <button class="btn btn-outline text-sm mt-2" onclick="openSuppsInventoryModal()">⚙️ Настроить остатки банок</button>
+                        <p id="foodTotalKcal" class="text-primary font-bold text-xl">0 ккал</p>
+                        <div class="grid-3 gap-2 mt-2">
+                            <div class="p-2 card"><div class="text-xs text-muted">Белки</div><div id="bCount" class="font-bold">0г</div></div>
+                            <div class="p-2 card"><div class="text-xs text-muted">Жиры</div><div id="fCount" class="font-bold">0г</div></div>
+                            <div class="p-2 card"><div class="text-xs text-muted">Углеводы</div><div id="uCount" class="font-bold">0г</div></div>
+                        </div>
+                        <div id="todayFoodList" class="flex-col gap-1 mt-2 text-left text-xs text-muted"></div>
                     </div>
                 </div>
 
-                <!-- API KEYS -->
-                <div id="module-settings" class="module">
-                    <h2>⚙️ Настройки API и Бэкапы</h2>
-                    <div class="card flex-col gap-2">
-                        <button class="btn btn-outline" style="border-color: var(--success); color: var(--success);" onclick="exportEncryptedJSON()">💾 Скачать зашифрованный JSON-дамп</button>
-                    </div>
-                    <div class="card flex-col gap-2 mt-2">
-                        <div class="input-group">
-                            <label>Gemini API Key</label>
-                            <input type="password" id="geminiKey" class="input">
+                <!-- 4. ВОДА -->
+                <div id="module-water" class="module">
+                    <h2>💧 Трекер Воды</h2>
+                    <div class="card flex-col gap-2 text-center">
+                        <p class="text-muted text-sm">Суточная цель: <span id="waterNormLabel">3000</span> мл</p>
+                        <div class="battery-bar" style="height:28px;">
+                            <div class="battery-fill bg-water" id="waterBar" style="width: 0%;"></div>
                         </div>
-                        <button class="btn btn-primary" onclick="saveSettings()">Сохранить настройки</button>
+                        <p class="font-bold text-xl"><span id="waterLevel">0</span> / <span id="waterNormDisplay">3000</span> мл</p>
+
+                        <div class="grid-4 gap-2">
+                            <button class="btn btn-outline btn-sm" style="border-color:var(--water); color:var(--water);" onclick="addWater(100)">+100</button>
+                            <button class="btn btn-outline btn-sm" style="border-color:var(--water); color:var(--water);" onclick="addWater(250)">+250</button>
+                            <button class="btn btn-outline btn-sm" style="border-color:var(--water); color:var(--water);" onclick="addWater(500)">+500</button>
+                            <button class="btn btn-outline btn-sm" style="border-color:var(--water); color:var(--water);" onclick="addWater(1000)">+1Л</button>
+                        </div>
+
+                        <div class="flex gap-2 mt-1">
+                            <input type="number" id="customWaterInput" placeholder="Свой объём (мл)" style="flex:1;">
+                            <button class="btn btn-primary" style="width:auto;" onclick="addCustomWater()">Добавить</button>
+                        </div>
+                        <p id="waterTileSyncInfo" class="text-xs text-muted mt-1">Шторка QuickSettings (+250 мл) синхронизируется автоматически.</p>
                     </div>
                 </div>
+
+                <!-- 5. СОН И ЦНС -->
+                <div id="module-sleep" class="module">
+                    <h2>🛌 Сон, ЦНС и Аналитика</h2>
+                    <div class="card flex-col gap-2 mb-2">
+                        <div class="grid-2 gap-2">
+                            <div class="input-group">
+                                <label>Часов сна</label>
+                                <input type="number" step="0.5" id="sleepHours" placeholder="7.5">
+                            </div>
+                            <div class="input-group">
+                                <label>Качество (1–5)</label>
+                                <select id="sleepQuality">
+                                    <option value="5">5 — Отличный глубокий</option>
+                                    <option value="4" selected>4 — Хороший</option>
+                                    <option value="3">3 — Поверхностный</option>
+                                    <option value="2">2 — Рваный / тревожный</option>
+                                    <option value="1">1 — Бессонница / ночной ад</option>
+                                </select>
+                            </div>
+                        </div>
+                        <input type="text" id="sleepNote" placeholder="Заметка (напр. сирена в 3 ночи)">
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-primary" onclick="logSleep()">💾 Записать сон</button>
+                            <button class="btn btn-success" onclick="logCnsRecovery()">🧘 Сброс ЦНС (+BB)</button>
+                        </div>
+                    </div>
+
+                    <div class="card mb-2">
+                        <h3>📊 График ресурса ЦНС (14 дней)</h3>
+                        <div style="background:#0d1117; padding:8px; border-radius:8px; border:1px solid var(--border);">
+                            <canvas id="cnsChart" style="display:block; width:100%; height:180px;"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>🧠 Инсайты (Spearman + FDR)</h3>
+                        <p class="text-xs text-muted mb-2">Без фантазий ИИ: только математически подтвержденные сдвиги PVT (мин. 14 дней).</p>
+                        <div id="cnsInsightsList" class="flex-col gap-2 text-sm"></div>
+                    </div>
+                </div>
+
+                <!-- 6. ТРЕНИРОВКИ -->
+                <div id="module-workout" class="module">
+                    <h2>🏋️ Изометрия и Тренировки</h2>
+                    <div class="card flex-col gap-2 mb-2 text-center">
+                        <p id="workoutModeTitle" class="font-bold">Режим: НОРМА</p>
+                        <div id="isoTimerDisplay" style="font-size:44px; font-family:monospace; font-weight:800; color:var(--primary);">00:00</div>
+                        <div class="grid-3 gap-2">
+                            <button class="btn btn-primary btn-sm" id="iso30btn" onclick="startIsoTimer(45, 'expander')">Эспандер 45с</button>
+                            <button class="btn btn-primary btn-sm" id="iso60btn" onclick="startIsoTimer(60, 'gyroball')">Гиро 60с</button>
+                            <button class="btn btn-primary btn-sm" id="isoDbbtn" onclick="startIsoTimer(30, 'dumbbells')">Гантели 30с</button>
+                        </div>
+                        <button class="btn btn-danger btn-sm" onclick="stopIsoTimer()">Стоп таймер</button>
+                    </div>
+
+                    <div id="workoutBlock2" class="card flex-col gap-2 mb-2">
+                        <h3>Быстрая фиксация нагрузки</h3>
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-outline btn-sm" onclick="addRep('light')">+ Подход (лёгкий)</button>
+                            <button class="btn btn-success btn-sm" onclick="completeWorkout()">✅ Закрыть тренировку</button>
+                        </div>
+                    </div>
+
+                    <div id="workoutBlock3" class="card text-xs text-muted">
+                        Экран не гаснет во время тренировки (Wakelock активен). При Body Battery ≤ 20 автоматически включается щадящий режим DELOAD.
+                    </div>
+                </div>
+
+                <!-- 7. БИОМЕТРИЯ (PVT) -->
+                <div id="module-biometrics" class="module">
+                    <h2>🧬 Биометрия ЦНС (PVT)</h2>
+                    <div class="card flex-col gap-2 text-center">
+                        <p class="text-sm text-muted">
+                            5 замеров на <code>pointerdown</code> + <code>performance.now()</code>. Жми мгновенно, когда кнопка станет красной.
+                        </p>
+                        <div id="pvtProgress" class="text-xs text-primary font-bold">Готов к серии (0 / 5)</div>
+                        <button id="pvtButton" class="btn btn-primary" style="min-height:110px; font-size:20px;">⚡ Старт PVT Теста</button>
+                        <div id="hrvResult" class="card bg-dark text-sm" style="display:none;"></div>
+                        <div id="pvtBaselineInfo" class="text-xs text-muted">Личный baseline появится после 3+ серий.</div>
+                    </div>
+                </div>
+
+                <!-- 8. ФАРМА И БАДЫ -->
+                <div id="module-pharma" class="module">
+                    <h2>☕ Фарма и Стек БАДов</h2>
+                    <div class="card flex-col gap-2 mb-2">
+                        <h3>Уровень Кофеина (T½ = 5ч)</h3>
+                        <div class="battery-bar">
+                            <div class="battery-fill" id="caffeineBar" style="width:0%; background:#a67c52;"></div>
+                        </div>
+                        <p class="text-center font-bold"><span id="caffeineLevel">0</span> мг активного кофеина</p>
+                        <div id="caffeineWarning" class="text-danger text-center font-bold text-xs" style="display:none;">
+                            ⚠️ Высокий кофеин (>200 мг). Рекомендуется NSDR перед сном!
+                        </div>
+                        <div class="grid-4 gap-2">
+                            <button class="btn btn-outline btn-sm" onclick="addCaffeine(50)">+50мг</button>
+                            <button class="btn btn-outline btn-sm" onclick="addCaffeine(100)">+100мг</button>
+                            <button class="btn btn-outline btn-sm" onclick="addCaffeine(150)">+150мг</button>
+                            <button class="btn btn-outline btn-sm" onclick="addCaffeine(200)">+200мг</button>
+                        </div>
+                    </div>
+
+                    <div class="card flex-col gap-2">
+                        <div class="flex justify-between align-center">
+                            <h3 style="margin:0;">💊 Ежедневный Стек</h3>
+                            <button class="btn btn-outline btn-sm" style="width:auto;" onclick="openSuppsInventoryModal()">⚙️ Остатки</button>
+                        </div>
+                        <div id="suppsContainer" class="flex-col gap-2"></div>
+                    </div>
+                </div>
+
+                <!-- 9. ИИ-ТРЕНЕР (GEMINI HYDROGEN ONLY) -->
+                <div id="module-chat" class="module">
+                    <div class="flex justify-between align-center mb-2">
+                        <h2 style="margin:0;">💬 ИИ-Тренер</h2>
+                        <span id="chatModelBadge" class="badge-pill">gemini-4-hydrogen · HIGH</span>
+                    </div>
+                    <button class="btn btn-outline btn-sm mb-2" onclick="generate14DayDigest()">📊 Сгенерировать отчёт за 14 дней</button>
+                    <div class="card flex-col gap-2" style="height: 56vh; display:flex; flex-direction:column;">
+                        <div id="chatHistory" style="flex:1; overflow-y:auto; background:#0d1117; padding:10px; border-radius:8px; display:flex; flex-direction:column; gap:10px;">
+                            <div class="text-muted text-sm text-center">Gemini 4 Hydrogen (режим HIGH) готов. Задай вопрос по питанию, сну или ЦНС.</div>
+                        </div>
+                        <div class="flex gap-2">
+                            <input type="text" id="chatInput" placeholder="Спроси тренера..." style="flex:1;">
+                            <button class="btn btn-primary" style="width:auto;" onclick="sendChatMessage()">🚀</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 10. СТЕГАНОГРАФИЯ, БЭКАП И QR -->
+                <div id="module-stegano" class="module">
+                    <h2>🖼 Стеганография, Бэкап и QR</h2>
+                    <div class="card flex-col gap-2 mb-2">
+                        <h3>PNG-Стего (AES-256-GCM + Deflate)</h3>
+                        <p class="text-xs text-muted">Сохраняет базу внутрь PNG (Alpha=255). Пересылать в мессенджерах ТОЛЬКО как файл/документ!</p>
+                        <input type="password" id="steganoPassInput" placeholder="Пароль шифрования PNG (мин. 4 симв.)">
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-primary btn-sm" onclick="exportStegoBackup()">📥 Скачать PNG</button>
+                            <button class="btn btn-success btn-sm" onclick="document.getElementById('steganoDecodeInput').click()">📤 Восстановить PNG</button>
+                        </div>
+                        <input type="file" id="steganoDecodeInput" accept="image/png" style="display:none" onchange="importStegoBackup(event)">
+                    </div>
+
+                    <div class="card flex-col gap-2 mb-2">
+                        <h3>Зашифрованный резерв (.tank)</h3>
+                        <input type="password" id="tankBackupPassInput" placeholder="Пароль для .tank файла">
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-outline btn-sm" style="border-color:var(--success); color:var(--success);" onclick="exportEncryptedJSON()">💾 Экспорт .tank</button>
+                            <button class="btn btn-outline btn-sm" onclick="document.getElementById('tankImportInput').click()">📂 Импорт .tank</button>
+                        </div>
+                        <input type="file" id="tankImportInput" accept=".tank,.json,application/json,application/octet-stream" style="display:none" onchange="importEncryptedJSON(event)">
+                    </div>
+
+                    <div class="card flex-col gap-2 text-center">
+                        <h3>📲 Быстрый QR-Обмен</h3>
+                        <input type="text" id="qrInputText" placeholder="Текст или краткая сводка для QR (или оставь пустым для мед-карточки)">
+                        <button class="btn btn-outline btn-sm" onclick="generateSummaryQR()">Сгенерировать QR</button>
+                        <div id="qrOutput" class="flex justify-center mt-1" style="background:#fff; padding:10px; border-radius:8px; display:none;"></div>
+                    </div>
+                </div>
+
+                <!-- 11. НАСТРОЙКИ -->
+                <div id="module-settings" class="module">
+                    <h2>⚙️ Настройки и Безопасность</h2>
+                    <div class="card flex-col gap-2 mb-2">
+                        <h3>Google Gemini API (без Groq)</h3>
+                        <div class="input-group">
+                            <label>Ключ ИИ-Тренера (чат и 14-дн. анализ)</label>
+                            <input type="password" id="geminiTrainerKey" placeholder="AQ.Ab8RN6...">
+                        </div>
+                        <div class="input-group">
+                            <label>Ключ Фото-Vision (распознавание еды)</label>
+                            <input type="password" id="geminiVisionKey" placeholder="AQ.Ab8RN6...">
+                        </div>
+                        <div class="grid-2 gap-2">
+                            <div class="input-group">
+                                <label>Модель Gemini</label>
+                                <select id="geminiModelSelect">
+                                    <option value="gemini-4-hydrogen">gemini-4-hydrogen (Реком.)</option>
+                                    <option value="gemini-2.5-flash">gemini-2.5-flash (Эконом)</option>
+                                </select>
+                            </div>
+                            <div class="input-group">
+                                <label>Режим Thinking</label>
+                                <select id="geminiThinkingSelect">
+                                    <option value="HIGH">HIGH (Оптимально)</option>
+                                    <option value="MEDIUM">MEDIUM (Эконом)</option>
+                                    <option value="LOW">LOW (Мин. лимиты)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" onclick="saveSettings()">💾 Сохранить API настройки</button>
+                    </div>
+
+                    <div class="card flex-col gap-2 mb-2" style="border-color:rgba(241,196,15,0.4);">
+                        <h3 class="text-warning" style="margin:0;">🛠 HyperOS / Android 15 (Redmi 13C)</h3>
+                        <p id="exactAlarmStatusText" class="text-xs text-muted">Проверка прав AlarmManager...</p>
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-outline btn-sm" onclick="openExactAlarmSettingsUI()">⏰ Право будильника</button>
+                            <button class="btn btn-outline btn-sm" onclick="testNotificationBridge()">🔔 Тест пуша</button>
+                        </div>
+                    </div>
+
+                    <div class="card flex-col gap-2">
+                        <h3>🔐 Смена PIN-кодов Vault</h3>
+                        <input type="password" id="oldRealPin" placeholder="Текущий Реальный PIN">
+                        <input type="text" id="newRealPin" placeholder="Новый Реальный PIN">
+                        <input type="text" id="newDecoyPin" placeholder="Новый Фейковый PIN (Decoy)">
+                        <input type="text" id="newPanicPin" placeholder="Новый Panic Wipe PIN (опц.)">
+                        <button class="btn btn-outline btn-sm" onclick="changeVaultPinsUI()">Перешифровать Vault</button>
+                    </div>
+                </div>
+
+                <!-- 12. SOS ПРОТОКОЛЫ -->
+                <div id="module-sos" class="module">
+                    <h2 class="text-danger">🆘 SOS Протоколы (100% Оффлайн)</h2>
+                    <div class="grid-3 gap-2 mb-2">
+                        <button class="btn btn-danger btn-sm" onclick="showSosCategory('panic')">🚨 Паника</button>
+                        <button class="btn btn-warning btn-sm" onclick="showSosCategory('alcohol')">🍺 Срыв</button>
+                        <button class="btn btn-outline btn-sm" style="border-color:var(--danger); color:var(--danger);" onclick="showSosCategory('drugs')">💊 Отхода</button>
+                    </div>
+
+                    <div id="sosSubContainer" class="card flex-col gap-2" style="display:none;">
+                        <h3 id="sosSubTitle" class="text-center"></h3>
+                        <div id="sosSubButtons" class="flex-col gap-2"></div>
+                        <div id="sosBreathingBlock" style="display:none;" class="text-center">
+                            <p class="text-xs text-muted">Физиологический вздох: двойной вдох носом — длинный выдох ртом.</p>
+                            <div id="breathSighCircle" class="breathing-animator">ВЗДОХ</div>
+                            <div class="grid-2 gap-2">
+                                <button class="btn btn-primary btn-sm" onclick="startSighAnimation()">▶ Старт</button>
+                                <button class="btn btn-outline btn-sm" onclick="stopSighAnimation()">⏹ Стоп</button>
+                            </div>
+                        </div>
+                        <button class="btn btn-outline btn-sm mt-1" onclick="startNSDR()">🎧 Запустить 15-мин NSDR</button>
+                        <div id="nsdrDisplay" class="text-center font-bold text-xl text-success" style="display:none;">15:00</div>
+                    </div>
+                </div>
+
             </div>
-        </div>
+        </main>
     </div>
-    
-    <!-- Scripts -->
+
+    <!-- Local Scripts (Zero CDN) -->
     <script src="qrcode.min.js"></script>
     <script src="app.js"></script>
-    <script src="cyberpunk.js"></script>
+    <script src="food_pots.js"></script>
+    <script src="cns_biometrics.js"></script>
+    <script src="security_stego.js"></script>
     <script src="cyberpunk_ai.js"></script>
 </body>
 </html>
