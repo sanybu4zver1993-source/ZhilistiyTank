@@ -244,6 +244,14 @@ class MainActivity : ComponentActivity() {
                                 ): WebResourceResponse? {
                                     return assetLoader.shouldInterceptRequest(request.url)
                                 }
+
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView,
+                                    request: WebResourceRequest
+                                ): Boolean {
+                                    val url = request.url ?: return true
+                                    return !(url.scheme == "https" && url.host == "appassets.androidplatform.net")
+                                }
                             }
 
                             webChromeClient = object : WebChromeClient() {
