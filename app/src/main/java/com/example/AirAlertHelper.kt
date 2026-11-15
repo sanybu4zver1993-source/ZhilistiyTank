@@ -5,8 +5,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 
 object AirAlertHelper {
 
@@ -347,26 +345,17 @@ object AirAlertHelper {
         connectMs: Int,
         readMs: Int
     ): Pair<Int, String> {
-        var conn: HttpURLConnection? = null
-        return try {
-            conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = connectMs
-                readTimeout = readMs
-                setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "VeinyTank/4.2")
-                if (!bearerToken.isNullOrBlank()) {
-                    setRequestProperty("Authorization", "Bearer $bearerToken")
-                }
-            }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-            code to body
-        } catch (_: Exception) {
-            0 to ""
-        } finally {
-            conn?.disconnect()
+        val headers = if (!bearerToken.isNullOrBlank()) {
+            mapOf("Authorization" to "Bearer $bearerToken")
+        } else {
+            emptyMap()
         }
+        val res = ResilientNetwork.get(
+            urlString = urlString,
+            headers = headers,
+            connectTimeoutMs = connectMs,
+            readTimeoutMs = readMs
+        )
+        return res.status to res.body
     }
 }

@@ -37,7 +37,7 @@
         };
 
         window.onAppBackgrounded = function () {
-            window.lockToStealth();
+            if (window.flushVaultNow) window.flushVaultNow();
         };
 
         window.addEventListener('error', function (ev) {
@@ -47,13 +47,8 @@
         });
 
         document.addEventListener('visibilitychange', function () {
-            const bridgeActive = Boolean(
-                window.AndroidBridge &&
-                window.AndroidBridge.hasActiveVaultSession &&
-                window.AndroidBridge.hasActiveVaultSession()
-            );
-            if (document.hidden && !bridgeActive) {
-                window.onAppBackgrounded();
+            if (document.hidden && window.flushVaultNow) {
+                window.flushVaultNow();
             }
         });
     </script>
@@ -622,7 +617,7 @@
 
                         <div class="grid-2 gap-2">
                             <button class="btn btn-primary" onclick="saveSettings()">💾 Сохранить API</button>
-                            <button class="btn btn-outline" id="btnTestGeminiKey" onclick="testGeminiKeyConnection()">🔌 Тест ключа</button>
+                            <button class="btn btn-outline" id="btnTestGeminiKey" onclick="runGlobalNetworkDiagnosticsUI()">🌐 Проверка связи</button>
                         </div>
                         <div id="geminiTestStatus" class="text-xs text-muted"></div>
                     </div>

@@ -63,8 +63,6 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.Executors
 
@@ -90,9 +88,6 @@ class MainActivity : ComponentActivity() {
 
     private val imageExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val fallbackRamClearRunnable = Runnable {
-        bridgeRef?.lockVaultSessionNow() ?: VaultManager.clearSessionInRam()
-    }
 
     fun launchExternalSystemFlow(ttlMs: Long = 90_000L, block: () -> Unit) {
         awaitingSystemResult = true
@@ -464,35 +459,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        val now = SystemClock.elapsedRealtime()
-        val isPickerGraceActive = awaitingSystemResult && now < systemResultDeadlineMs && pm.isInteractive
-
-        if (!isPickerGraceActive) {
-            clearExternalFlowGrace()
-            webViewRef?.evaluateJavascript(
-                "window.onAppBackgrounded && window.onAppBackgrounded();",
-                null
-            )
-            // Safety fallback guarantees RAM zeroization even if WebView fails to call lockVaultSessionNow()
-            mainHandler.removeCallbacks(fallbackRamClearRunnable)
-            mainHandler.postDelayed(fallbackRamClearRunnable, 350L)
-        }
+        // Flush encrypted Vault state to disk when switching windows, WITHOUT locking the session.
+        // Vault locks only on explicit "🔒 Скрыть" or when the app is closed (onDestroy).
+        webViewRef?.evaluateJavascript(
+            "window.flushVaultNow && window.flushVaultNow();",
+            null
+        )
     }
 
     override fun onResume() {
         super.onResume()
-        mainHandler.removeCallbacks(fallbackRamClearRunnable)
-        val now = SystemClock.elapsedRealtime()
-        if (awaitingSystemResult && now >= systemResultDeadlineMs) {
-            clearExternalFlowGrace()
-            webViewRef?.evaluateJavascript(
-                "window.onAppBackgrounded && window.onAppBackgrounded();",
-                null
-            )
-            mainHandler.postDelayed(fallbackRamClearRunnable, 350L)
-            return
-        }
         if (awaitingSystemResult) {
             clearExternalFlowGrace()
         }
@@ -506,7 +482,9 @@ class MainActivity : ComponentActivity() {
         mainHandler.removeCallbacksAndMessages(null)
         WaterSyncBus.activeListener = null
         VaultManager.webViewWipeHook = null
-        VaultManager.clearSessionInRam()
+        if (!isChangingConfigurations) {
+            VaultManager.clearSessionInRam()
+        }
         webViewRef?.apply {
             stopLoading()
             destroy()
@@ -839,22 +817,17 @@ class WebAppInterface(
             )
 
             var apiErrorNote = ""
-            var conn: HttpURLConnection? = null
             try {
                 Log.d("VeinyTankAI", "fetchGeminiModels key=${keyPrefixTag(cleanKey)}")
-                conn = (URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100").openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 20_000
-                    readTimeout = 25_000
-                    setRequestProperty("Accept", "application/json")
-                    setRequestProperty("x-goog-api-key", cleanKey)
-                }
-                val code = conn.responseCode
-                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-                Log.d("VeinyTankAI", "fetchGeminiModels status=$code bodyLen=${body.length}")
-                if (code in 200..299) {
-                    val json = JSONObject(body)
+                val resp = ResilientNetwork.get(
+                    urlString = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100",
+                    headers = mapOf("x-goog-api-key" to cleanKey),
+                    connectTimeoutMs = 15_000,
+                    readTimeoutMs = 20_000
+                )
+                Log.d("VeinyTankAI", "fetchGeminiModels status=${resp.status} via=${resp.resolvedVia} bodyLen=${resp.body.length}")
+                if (resp.ok) {
+                    val json = JSONObject(resp.body)
                     val arr = json.optJSONArray("models") ?: JSONArray()
                     val filtered = JSONArray()
                     for (i in 0 until arr.length()) {
@@ -876,26 +849,29 @@ class WebAppInterface(
                     if (filtered.length() > 0) {
                         invokeJsCallback(
                             callbackName,
-                            JSONObject().put("ok", true).put("fallback", false).put("models", filtered).toString()
+                            JSONObject()
+                                .put("ok", true)
+                                .put("fallback", false)
+                                .put("resolvedVia", resp.resolvedVia)
+                                .put("models", filtered)
+                                .toString()
                         )
                         return@execute
                     }
                     apiErrorNote = "API вернул 0 подходящих моделей"
                 } else {
-                    val errDetail = extractGeminiErrorMsg(body)
-                    apiErrorNote = "HTTP $code${if (errDetail.isNotBlank()) ": $errDetail" else ""}"
+                    val errDetail = extractGeminiErrorMsg(resp.body).ifBlank { resp.error }
+                    apiErrorNote = "HTTP ${resp.status}${if (errDetail.isNotBlank()) ": $errDetail" else ""}"
                     Log.w("VeinyTankAI", "fetchGeminiModels rejected: $apiErrorNote")
                 }
             } catch (t: Throwable) {
                 apiErrorNote = "${t.javaClass.simpleName}: ${t.message ?: "network error"}"
                 Log.e("VeinyTankAI", "fetchGeminiModels exception: $apiErrorNote")
-            } finally {
-                conn?.disconnect()
             }
 
-            // Express AQ. keys often cannot query models.list; provide curated fallback list cleanly
+            // Vertex Express AQ. keys often cannot query models.list; provide curated fallback list cleanly
             val msg = if (cleanKey.startsWith("AQ.")) {
-                "Express-ключ (AQ.): загружен базовый список моделей"
+                "AQ-ключ ($apiErrorNote): загружен базовый список моделей"
             } else {
                 "Не удалось получить список с API ($apiErrorNote) — показан базовый набор"
             }
@@ -915,31 +891,15 @@ class WebAppInterface(
                 if (cleanKey.isEmpty() || cleanModel.isEmpty()) {
                     JSONObject().put("ok", false).put("status", 0).put("error", "Не указан ключ или модель")
                 } else {
-                    val encodedModel = URLEncoder.encode(cleanModel, "UTF-8").replace("+", "%20")
-                    val isExpressKey = cleanKey.startsWith("AQ.")
-                    val aiStudioUrl = "https://generativelanguage.googleapis.com/v1beta/models/$encodedModel:generateContent"
-                    val expressUrl = "https://aiplatform.googleapis.com/v1/publishers/google/models/$encodedModel:generateContent?key=" +
-                        URLEncoder.encode(cleanKey, "UTF-8")
-
                     val startedAt = SystemClock.elapsedRealtime()
                     Log.d("VeinyTankAI", "callGemini start model=$cleanModel key=${keyPrefixTag(cleanKey)} payloadLen=${payloadJson.length}")
-
-                    var result = if (isExpressKey) {
-                        postGeminiJson(expressUrl, cleanKey, payloadJson, useQueryKey = true, hostLabel = "aiplatform")
-                    } else {
-                        postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage")
-                    }
-
-                    val status = result.optInt("status", 0)
-                    if (!result.optBoolean("ok", false) && isExpressKey && (status == 400 || status == 401 || status == 403 || status == 404)) {
-                        val altResult = postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage-fallback")
-                        if (altResult.optBoolean("ok", false)) {
-                            result = altResult
-                        }
-                    }
-
+                    val result = callGeminiWithFallback(cleanKey, cleanModel, payloadJson)
                     val elapsed = SystemClock.elapsedRealtime() - startedAt
-                    Log.d("VeinyTankAI", "callGemini done model=$cleanModel ok=${result.optBoolean("ok")} status=${result.optInt("status")} elapsed=${elapsed}ms")
+                    result.put("elapsedMs", elapsed)
+                    Log.d(
+                        "VeinyTankAI",
+                        "callGemini done model=$cleanModel ok=${result.optBoolean("ok")} status=${result.optInt("status")} endpoint=${result.optString("endpoint")} via=${result.optString("resolvedVia")} elapsed=${elapsed}ms"
+                    )
                     result
                 }
             } catch (t: Throwable) {
@@ -950,6 +910,49 @@ class WebAppInterface(
         }
     }
 
+    private fun callGeminiWithFallback(cleanKey: String, cleanModel: String, payloadJson: String): JSONObject {
+        val encodedModel = URLEncoder.encode(cleanModel, "UTF-8").replace("+", "%20")
+        val encodedKey = URLEncoder.encode(cleanKey, "UTF-8")
+        val isAqKey = cleanKey.startsWith("AQ.")
+
+        val aiStudioUrl = "https://generativelanguage.googleapis.com/v1beta/models/$encodedModel:generateContent"
+        val expressV1Url = "https://aiplatform.googleapis.com/v1/publishers/google/models/$encodedModel:generateContent?key=$encodedKey"
+        val expressV1BetaUrl = "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/$encodedModel:generateContent?key=$encodedKey"
+
+        // AI Studio now issues AQ.* keys as well, and generativelanguage works on both AIza* and AI Studio AQ.*.
+        val studioRes = postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage")
+        if (studioRes.optBoolean("ok", false) || !isAqKey) {
+            return studioRes
+        }
+
+        // For Vertex Express AQ.* keys, try aiplatform regardless of whether studio failed with HTTP 4xx or network/DNS error (status 0).
+        var vertexRes = postGeminiJson(expressV1Url, cleanKey, payloadJson, useQueryKey = true, hostLabel = "aiplatform-v1")
+        if (vertexRes.optBoolean("ok", false)) {
+            return vertexRes
+        }
+        if (vertexRes.optInt("status", 0) == 404) {
+            val betaRes = postGeminiJson(expressV1BetaUrl, cleanKey, payloadJson, useQueryKey = true, hostLabel = "aiplatform-v1beta1")
+            if (betaRes.optBoolean("ok", false)) {
+                return betaRes
+            }
+            vertexRes = betaRes
+        }
+
+        val studioStatus = studioRes.optInt("status", 0)
+        val vertexStatus = vertexRes.optInt("status", 0)
+        val studioErr = studioRes.optString("error", "ошибка")
+        val vertexErr = vertexRes.optString("error", "ошибка")
+        val combinedErr = "AI Studio (generativelanguage, HTTP $studioStatus): $studioErr\nVertex Express (aiplatform, HTTP $vertexStatus): $vertexErr"
+        val preferred = if (studioStatus != 0) studioRes else vertexRes
+        return JSONObject()
+            .put("ok", false)
+            .put("status", preferred.optInt("status", 0))
+            .put("body", preferred.optString("body", ""))
+            .put("endpoint", "generativelanguage + aiplatform")
+            .put("resolvedVia", "${studioRes.optString("resolvedVia")} / ${vertexRes.optString("resolvedVia")}")
+            .put("error", combinedErr)
+    }
+
     private fun postGeminiJson(
         urlString: String,
         apiKey: String,
@@ -957,40 +960,128 @@ class WebAppInterface(
         useQueryKey: Boolean,
         hostLabel: String
     ): JSONObject {
-        var conn: HttpURLConnection? = null
-        return try {
-            conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                connectTimeout = 20_000
-                readTimeout = 60_000
-                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                setRequestProperty("Accept", "application/json")
-                if (!useQueryKey) {
-                    setRequestProperty("x-goog-api-key", apiKey)
+        val headers = if (!useQueryKey) mapOf("x-goog-api-key" to apiKey) else emptyMap()
+        val resp = ResilientNetwork.postJson(
+            urlString = urlString,
+            jsonBody = payloadJson,
+            headers = headers,
+            connectTimeoutMs = 20_000,
+            readTimeoutMs = 60_000
+        )
+        return if (resp.ok) {
+            JSONObject()
+                .put("ok", true)
+                .put("status", resp.status)
+                .put("body", resp.body)
+                .put("endpoint", hostLabel)
+                .put("resolvedVia", resp.resolvedVia)
+        } else {
+            val errMsg = extractGeminiErrorMsg(resp.body).ifBlank { resp.error }
+            Log.w("VeinyTankAI", "Failed on $hostLabel status=${resp.status} via=${resp.resolvedVia}: ${errMsg.take(260)}")
+            JSONObject()
+                .put("ok", false)
+                .put("status", resp.status)
+                .put("body", resp.body)
+                .put("endpoint", hostLabel)
+                .put("resolvedVia", resp.resolvedVia)
+                .put("error", errMsg.ifBlank { "HTTP ${resp.status} ($hostLabel)" })
+        }
+    }
+
+    @JavascriptInterface
+    fun runGlobalNetworkDiagnosticsAsync(
+        trainerKey: String,
+        visionKey: String,
+        modelId: String,
+        callbackName: String
+    ) {
+        networkExecutor.execute {
+            val out = JSONObject()
+            try {
+                ResilientNetwork.clearDnsCache()
+
+                // 1. Device Network / VPN / Private DNS state
+                out.put("network", ResilientNetwork.inspectDeviceNetworkState(context))
+
+                // 2. Fresh System DNS vs DoH resolution probes
+                val hosts = listOf(
+                    "generativelanguage.googleapis.com",
+                    "aiplatform.googleapis.com",
+                    "siren.pp.ua",
+                    "api.open-meteo.com"
+                )
+                val dnsArray = JSONArray()
+                for (h in hosts) {
+                    dnsArray.put(ResilientNetwork.probeHostResolution(h))
                 }
+                out.put("dns", dnsArray)
+
+                // 3. Background services HTTP checks
+                val services = JSONObject()
+                val sirenResp = ResilientNetwork.get("https://siren.pp.ua/api/v3/alerts", connectTimeoutMs = 8_000, readTimeoutMs = 10_000)
+                services.put(
+                    "siren",
+                    JSONObject()
+                        .put("ok", sirenResp.ok && AirAlertHelper.isValidSirenAlertsPayload(sirenResp.body))
+                        .put("status", sirenResp.status)
+                        .put("via", sirenResp.resolvedVia)
+                        .put("ms", sirenResp.elapsedMs)
+                        .put("error", sirenResp.error)
+                )
+
+                val weatherResp = ResilientNetwork.get(
+                    "https://api.open-meteo.com/v1/forecast?latitude=51.4982&longitude=31.2893&current=temperature_2m",
+                    connectTimeoutMs = 8_000,
+                    readTimeoutMs = 10_000
+                )
+                services.put(
+                    "weather",
+                    JSONObject()
+                        .put("ok", weatherResp.ok && weatherResp.body.contains("current"))
+                        .put("status", weatherResp.status)
+                        .put("via", weatherResp.resolvedVia)
+                        .put("ms", weatherResp.elapsedMs)
+                        .put("error", weatherResp.error)
+                )
+                out.put("services", services)
+
+                // 4. Live Gemini Key probes
+                val cleanModel = modelId.trim().ifEmpty { "gemini-4-hydrogen" }.removePrefix("models/")
+                val cleanTrainer = trainerKey.trim()
+                val cleanVision = visionKey.trim()
+                val probePayload = """{"contents":[{"role":"user","parts":[{"text":"Ответь словом: ОК"}]}],"generationConfig":{"temperature":0,"maxOutputTokens":16}}"""
+
+                if (cleanTrainer.isNotEmpty()) {
+                    val tStart = SystemClock.elapsedRealtime()
+                    val tRes = callGeminiWithFallback(cleanTrainer, cleanModel, probePayload)
+                    tRes.put("configured", true)
+                    tRes.put("model", cleanModel)
+                    tRes.put("keyTag", keyPrefixTag(cleanTrainer))
+                    tRes.put("ms", SystemClock.elapsedRealtime() - tStart)
+                    tRes.remove("body")
+                    out.put("trainerKeyTest", tRes)
+                } else {
+                    out.put("trainerKeyTest", JSONObject().put("configured", false))
+                }
+
+                if (cleanVision.isNotEmpty() && cleanVision != cleanTrainer) {
+                    val vStart = SystemClock.elapsedRealtime()
+                    val vRes = callGeminiWithFallback(cleanVision, cleanModel, probePayload)
+                    vRes.put("configured", true)
+                    vRes.put("model", cleanModel)
+                    vRes.put("keyTag", keyPrefixTag(cleanVision))
+                    vRes.put("ms", SystemClock.elapsedRealtime() - vStart)
+                    vRes.remove("body")
+                    out.put("visionKeyTest", vRes)
+                } else {
+                    out.put("visionKeyTest", JSONObject().put("sameAsTrainer", true))
+                }
+
+                out.put("ok", true)
+            } catch (t: Throwable) {
+                out.put("ok", false).put("error", "${t.javaClass.simpleName}: ${t.message ?: "Diagnostic error"}")
             }
-            conn.outputStream.use { it.write(payloadJson.toByteArray(Charsets.UTF_8)) }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-            if (code in 200..299) {
-                JSONObject().put("ok", true).put("status", code).put("body", body)
-            } else {
-                val errMsg = extractGeminiErrorMsg(body)
-                Log.w("VeinyTankAI", "HTTP $code from $hostLabel: ${errMsg.take(260)}")
-                JSONObject()
-                    .put("ok", false)
-                    .put("status", code)
-                    .put("body", body)
-                    .put("error", errMsg.ifBlank { "HTTP $code ($hostLabel)" })
-            }
-        } catch (t: Throwable) {
-            val msg = "${t.javaClass.simpleName}: ${t.message ?: "Network error"}"
-            Log.e("VeinyTankAI", "Exception on $hostLabel: $msg")
-            JSONObject().put("ok", false).put("status", 0).put("error", msg)
-        } finally {
-            conn?.disconnect()
+            invokeJsCallback(callbackName, out.toString())
         }
     }
 
@@ -1011,29 +1102,21 @@ class WebAppInterface(
 
     private fun fetchHttpGetAsync(urlString: String, bearerToken: String?, callbackName: String) {
         networkExecutor.execute {
-            var conn: HttpURLConnection? = null
-            val result = try {
-                conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 10_000
-                    readTimeout = 12_000
-                    setRequestProperty("Accept", "application/json")
-                    setRequestProperty("User-Agent", "VeinyTank/4.2")
-                    if (!bearerToken.isNullOrBlank()) {
-                        setRequestProperty("Authorization", "Bearer $bearerToken")
-                    }
-                }
-                val code = conn.responseCode
-                if (code in 200..299) {
-                    val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                    JSONObject().put("ok", true).put("body", body).toString()
-                } else {
-                    JSONObject().put("ok", false).put("status", code).toString()
-                }
-            } catch (e: Exception) {
-                JSONObject().put("ok", false).put("error", e.message ?: "Network error").toString()
-            } finally {
-                conn?.disconnect()
+            val headers = if (!bearerToken.isNullOrBlank()) {
+                mapOf("Authorization" to "Bearer $bearerToken")
+            } else {
+                emptyMap()
+            }
+            val resp = ResilientNetwork.get(
+                urlString = urlString,
+                headers = headers,
+                connectTimeoutMs = 10_000,
+                readTimeoutMs = 12_000
+            )
+            val result = if (resp.ok) {
+                JSONObject().put("ok", true).put("body", resp.body).put("resolvedVia", resp.resolvedVia).toString()
+            } else {
+                JSONObject().put("ok", false).put("status", resp.status).put("error", resp.error).toString()
             }
             invokeJsCallback(callbackName, result)
         }

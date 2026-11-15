@@ -63,7 +63,7 @@ window.refreshAiBadgesOnly = () => {
     if (chatHint) {
         if (!trainerKeyActive) {
             chatHint.style.display = "block";
-            chatHint.innerHTML = `⚠️ Ключ Gemini не задан. Перейди в <b>⚙️ Настройки</b>, вставь ключ и жми <b>🔌 Тест ключа</b>.`;
+            chatHint.innerHTML = `⚠️ Ключ Gemini не задан. Перейди в <b>⚙️ Настройки</b>, вставь ключ и жми <b>🌐 Проверка связи</b>.`;
         } else {
             chatHint.style.display = "none";
             chatHint.innerHTML = "";
@@ -125,11 +125,8 @@ function nativeCallGemini(apiKey, modelId, payloadObj) {
 
     const cleanKey = (apiKey || "").trim();
     const cleanModel = (modelId || "").replace(/^models\//, "");
-    const url = cleanKey.startsWith("AQ.")
-        ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`
-        : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent`;
-    const headers = { "Content-Type": "application/json" };
-    if (!cleanKey.startsWith("AQ.")) headers["x-goog-api-key"] = cleanKey;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent`;
+    const headers = { "Content-Type": "application/json", "x-goog-api-key": cleanKey };
 
     return fetch(url, {
         method: "POST",
@@ -168,7 +165,7 @@ function buildDiagnosticHint(status, detail) {
         return "Упёрся в лимит запросов (429). Подожди минуту или переключи модель/Thinking на LOW.";
     }
     if (status === 0) {
-        return "Проблема соединения/таймаут. Проверь интернет и VPN на телефоне.";
+        return "Проблема соединения или DNS (NextDNS/VPN). Открой ⚙️ Настройки → «🌐 Проверка связи» для точной диагностики.";
     }
     return "";
 }
@@ -799,35 +796,129 @@ function handleModelsLoadedForRole(role, resStr) {
 window.onTrainerModelsLoaded = (resStr) => handleModelsLoadedForRole("trainer", resStr);
 window.onVisionModelsLoaded = (resStr) => handleModelsLoadedForRole("vision", resStr);
 
-window.testGeminiKeyConnection = async () => {
+function setGlobalDiagBusy(busy) {
+    const btn = document.getElementById("btnTestGeminiKey");
+    if (btn) {
+        btn.disabled = busy;
+        btn.innerText = busy ? "⏳ Проверяю..." : "🌐 Проверка связи";
+    }
+}
+
+function renderKeyDiagLine(label, testObj) {
+    if (!testObj || testObj.sameAsTrainer) return "";
+    if (!testObj.configured) {
+        return `<div>• <b>${escapeHtml(label)}:</b> <span class="text-warning">ключ не указан</span></div>`;
+    }
+    if (testObj.ok) {
+        const ep = testObj.endpoint ? ` · ${escapeHtml(testObj.endpoint)}` : "";
+        const via = testObj.resolvedVia ? ` · DNS: ${escapeHtml(testObj.resolvedVia)}` : "";
+        return `<div>• <b>${escapeHtml(label)} (${escapeHtml(testObj.keyTag || "")}):</b> <span class="text-success">✅ ОК</span> <span class="text-muted">(${escapeHtml(testObj.model || "")}${ep}${via} · ${testObj.ms || 0}мс)</span></div>`;
+    }
+    return `<div>• <b>${escapeHtml(label)} (${escapeHtml(testObj.keyTag || "")}):</b> <span class="text-danger">❌ HTTP ${testObj.status || 0}</span><div class="text-danger" style="white-space:pre-wrap;padding-left:10px;">${escapeHtml(testObj.error || "Ошибка")}</div></div>`;
+}
+
+window.onGlobalNetworkDiagnosticsResult = (resStr) => {
+    setGlobalDiagBusy(false);
+    const statusBox = document.getElementById("geminiTestStatus");
+    if (!statusBox) return;
+    try {
+        const d = JSON.parse(resStr);
+        if (!d.ok && !d.network) {
+            statusBox.innerHTML = `<span class="text-danger">❌ Ошибка диагностики: ${escapeHtml(d.error || "неизвестно")}</span>`;
+            return;
+        }
+        const net = d.network || {};
+        const netColor = net.connected ? "text-success" : "text-danger";
+        const dnsRows = (d.dns || []).map(row => {
+            const sysBadge = row.systemOk
+                ? `<span class="text-success">Sys OK (${escapeHtml(row.systemIp)}, ${row.systemMs}мс)</span>`
+                : `<span class="text-warning">Sys ✖</span>`;
+            const dohBadge = row.dohOk
+                ? `<span class="text-success">${escapeHtml(row.dohSource || "DoH")} OK (${escapeHtml(row.dohIp)}, ${row.dohMs}мс)</span>`
+                : `<span class="text-danger">DoH ✖ (${escapeHtml(row.dohError || "")})</span>`;
+            return `<div>• <b>${escapeHtml(row.host)}:</b> ${sysBadge} | ${dohBadge}</div>`;
+        }).join("");
+
+        const srv = d.services || {};
+        const sirenOk = srv.siren?.ok;
+        const weatherOk = srv.weather?.ok;
+        const sirenLine = sirenOk
+            ? `<span class="text-success">✅ ОК (HTTP ${srv.siren.status}, ${escapeHtml(srv.siren.via)}, ${srv.siren.ms}мс)</span>`
+            : `<span class="text-danger">❌ HTTP ${srv.siren?.status || 0} (${escapeHtml(srv.siren?.error || "недоступен")})</span>`;
+        const weatherLine = weatherOk
+            ? `<span class="text-success">✅ ОК (HTTP ${srv.weather.status}, ${escapeHtml(srv.weather.via)}, ${srv.weather.ms}мс)</span>`
+            : `<span class="text-danger">❌ HTTP ${srv.weather?.status || 0} (${escapeHtml(srv.weather?.error || "недоступна")})</span>`;
+
+        const trainerHtml = renderKeyDiagLine("Gemini Тренер", d.trainerKeyTest);
+        const visionHtml = renderKeyDiagLine("Gemini Фотограф", d.visionKeyTest);
+
+        const privDnsText = net.privateDnsActive ? `ВКЛ (${net.privateDnsHost || "системный"})` : "Выкл";
+        statusBox.innerHTML = `
+            <div class="card flex-col gap-1 mt-1" style="background:#0d1117;padding:10px;border:1px solid var(--border);">
+                <div><b>1. Сеть устройства:</b> <span class="${netColor}">${net.connected ? "Онлайн" : "Нет интернета"}</span> · ${escapeHtml(net.transports || "—")} · VPN: <b>${net.vpnActive ? "ВКЛ" : "Выкл"}</b> · Private DNS: <b>${escapeHtml(privDnsText)}</b></div>
+                <div class="mt-1"><b>2. DNS и обход блокировок (Системный / DoH):</b></div>
+                ${dnsRows}
+                <div class="mt-1"><b>3. Фоновые сервисы:</b></div>
+                <div>• <b>Радар тревог (siren.pp.ua):</b> ${sirenLine}</div>
+                <div>• <b>Погода (open-meteo):</b> ${weatherLine}</div>
+                <div class="mt-1"><b>4. Проверка ключей Gemini:</b></div>
+                ${trainerHtml}
+                ${visionHtml}
+            </div>
+        `;
+
+        if (d.trainerKeyTest?.ok) {
+            showToast("✅ Связь и Gemini работают!");
+        } else if (net.connected && d.services?.siren?.ok) {
+            showToast("ℹ️ Сеть работает, смотри детали по ключу ниже");
+        } else {
+            showToast("⚠️ Смотри отчёт диагностики сети");
+        }
+    } catch (e) {
+        statusBox.innerHTML = `<span class="text-danger">❌ Ошибка разбора диагностики: ${escapeHtml(e.message)}</span>`;
+    }
+};
+
+window.runGlobalNetworkDiagnosticsUI = async () => {
     if (!window.assertVaultUnlocked()) return;
     window.syncApiKeysFromInputs(true);
+    const keys = AppState.apiKeys || {};
     const statusBox = document.getElementById("geminiTestStatus");
-    const btn = document.getElementById("btnTestGeminiKey");
-    if (btn) btn.disabled = true;
-    if (statusBox) statusBox.innerHTML = "<span class='text-primary'>🔌 Проверяю соединение с Gemini...</span>";
+    setGlobalDiagBusy(true);
+    if (statusBox) {
+        statusBox.innerHTML = "<span class='text-primary'>🌐 Проверяю сеть, VPN/Private DNS, DoH (1.1.1.1 / 8.8.8.8), ключи Gemini, радар тревог и погоду...</span>";
+    }
 
+    if (window.AndroidBridge && window.AndroidBridge.runGlobalNetworkDiagnosticsAsync) {
+        window.AndroidBridge.runGlobalNetworkDiagnosticsAsync(
+            keys.trainerKey || "",
+            keys.visionKey || "",
+            keys.trainerModel || "gemini-4-hydrogen",
+            "onGlobalNetworkDiagnosticsResult"
+        );
+        return;
+    }
+
+    // Web preview fallback
     try {
         const res = await window.AIRouter.callGemini(
             "trainer",
             [{ role: "user", parts: [{ text: "Ответь ровно двумя словами: СВЯЗЬ ЕСТЬ" }] }],
             { temperature: 0.1, thinkingLevel: "LOW", noCache: true }
         );
-        if (res.ok) {
-            if (statusBox) {
-                statusBox.innerHTML = `<span class='text-success'>✅ Работает! Модель <b>${escapeHtml(res.source)}</b> ответила за ${(res.elapsedMs / 1000).toFixed(1)}с: «${escapeHtml(res.text.slice(0, 80))}»</span>`;
-            }
-            showToast("✅ Ключ и модель работают!");
-        } else {
-            if (statusBox) {
-                statusBox.innerHTML = `<span class='text-danger' style='white-space:pre-wrap;'>❌ ${escapeHtml(res.error)}</span>`;
-            }
-            showToast("❌ Ошибка проверки ключа");
+        setGlobalDiagBusy(false);
+        if (statusBox) {
+            statusBox.innerHTML = res.ok
+                ? `<span class='text-success'>✅ Веб-проверка ОК (${escapeHtml(res.source)}): ${escapeHtml(res.text.slice(0, 60))}</span>`
+                : `<span class='text-danger' style='white-space:pre-wrap;'>❌ ${escapeHtml(res.error)}</span>`;
         }
-    } finally {
-        if (btn) btn.disabled = false;
+    } catch (e) {
+        setGlobalDiagBusy(false);
+        if (statusBox) statusBox.innerHTML = `<span class='text-danger'>❌ ${escapeHtml(e.message)}</span>`;
     }
 };
+
+window.testGeminiKeyConnection = window.runGlobalNetworkDiagnosticsUI;
 
 window.loadApiKeysUI = () => {
     const k = AppState.apiKeys || {};

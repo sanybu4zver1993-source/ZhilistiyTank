@@ -129,4 +129,15 @@ class ExampleRobolectricTest {
     assertEquals(false, VaultManager.hasActiveSession())
     assertEquals(-1, VaultManager.getActiveSlot())
   }
+
+  @Test
+  fun `ResilientNetwork inspects device network state safely under Robolectric`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    ResilientNetwork.clearDnsCache()
+    val state = ResilientNetwork.inspectDeviceNetworkState(context)
+    org.junit.Assert.assertTrue(state.has("connected"))
+    org.junit.Assert.assertTrue(state.has("vpnActive"))
+    org.junit.Assert.assertTrue(state.has("privateDnsActive"))
+    org.junit.Assert.assertNotNull(ResilientNetwork.httpClient.dns)
+  }
 }
