@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import okhttp3.Call
 import okhttp3.Dns
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -17,13 +18,28 @@ import java.net.URLEncoder
 import java.net.UnknownHostException
 import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 object ResilientNetwork {
     private const val TAG = "VeinyTankNet"
     private const val DOH_CACHE_TTL_MS = 10 * 60 * 1000L
-    private const val SYSTEM_DNS_TIMEOUT_MS = 2_500L
+    private const val SYSTEM_DNS_TIMEOUT_MS = 2_000L
+    private const val DOH_RACE_TIMEOUT_MS = 4_200L
+    private const val DOH_OUTAGE_COOLDOWN_MS = 12_000L
+
+    @Volatile
+    private var appContext: Context? = null
+
+    @Volatile
+    private var lastAllDohFailedAtMs: Long = 0L
+
+    fun init(context: Context) {
+        appContext = context.applicationContext
+    }
 
     data class HttpResponse(
         val ok: Boolean,
@@ -49,13 +65,14 @@ object ResilientNetwork {
             .connectTimeout(3, TimeUnit.SECONDS)
             .readTimeout(4, TimeUnit.SECONDS)
             .writeTimeout(4, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
+            .retryOnConnectionFailure(false)
             .build()
     }
 
     fun clearDnsCache() {
         dnsCache.clear()
         lastResolutionSource.clear()
+        lastAllDohFailedAtMs = 0L
     }
 
     private val dohEndpoints = listOf(
@@ -73,6 +90,23 @@ object ResilientNetwork {
         return host == "0.0.0.0" || host == "::" || host == "127.0.0.1" || host == "::1"
     }
 
+    private fun checkNetworkPrecondition(): String? {
+        val ctx = appContext ?: return null
+        return try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
+            val net = cm.activeNetwork
+                ?: return "Нет активной сети на устройстве (Wi-Fi/моб. сеть выключены или блокировка без VPN)"
+            val caps = cm.getNetworkCapabilities(net)
+                ?: return "Сеть не передаёт параметры устройству"
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                return "Активная сеть без выхода в интернет"
+            }
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun resolveSystemDnsOnly(hostname: String): List<InetAddress> {
         val future = dnsExecutor.submit(Callable {
             Dns.SYSTEM.lookup(hostname).filterNot { isSinkholeOrInvalid(it) }
@@ -87,58 +121,116 @@ object ResilientNetwork {
         }
     }
 
-    fun resolveViaDohOnly(hostname: String): Pair<List<InetAddress>, String> {
+    private fun queryDohSingle(
+        hostname: String,
+        qType: String,
+        label: String,
+        baseUrl: String,
+        activeCalls: CopyOnWriteArrayList<Call>
+    ): Pair<List<InetAddress>, String> {
         val encoded = URLEncoder.encode(hostname, "UTF-8")
-        val errors = mutableListOf<String>()
-
-        for ((label, baseUrl) in dohEndpoints) {
-            for (qType in listOf("A", "AAAA")) {
-                val url = "$baseUrl?name=$encoded&type=$qType"
-                try {
-                    val req = Request.Builder()
-                        .url(url)
-                        .header("Accept", "application/dns-json")
-                        .header("User-Agent", "VeinyTank/4.2")
-                        .get()
-                        .build()
-
-                    dohBootstrapClient.newCall(req).execute().use { resp ->
-                        if (!resp.isSuccessful) {
-                            errors.add("$label($qType)=HTTP ${resp.code}")
-                            return@use
-                        }
-                        val body = resp.body?.string().orEmpty()
-                        val json = JSONObject(body)
-                        val status = json.optInt("Status", -1)
-                        val answers = json.optJSONArray("Answer")
-                        val ips = mutableListOf<InetAddress>()
-                        if (status == 0 && answers != null) {
-                            for (i in 0 until answers.length()) {
-                                val ans = answers.optJSONObject(i) ?: continue
-                                val type = ans.optInt("type", -1)
-                                if (type == 1 || type == 28) {
-                                    val data = ans.optString("data", "").trim()
-                                    if (data.isNotEmpty()) {
-                                        try {
-                                            val addr = InetAddress.getByName(data)
-                                            if (!isSinkholeOrInvalid(addr)) ips.add(addr)
-                                        } catch (_: Exception) {
-                                        }
-                                    }
+        val url = "$baseUrl?name=$encoded&type=$qType"
+        val req = Request.Builder()
+            .url(url)
+            .header("Accept", "application/dns-json")
+            .header("User-Agent", "VeinyTank/4.2")
+            .get()
+            .build()
+        val call = dohBootstrapClient.newCall(req)
+        activeCalls.add(call)
+        try {
+            call.execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    throw UnknownHostException("$label($qType)=HTTP ${resp.code}")
+                }
+                val body = resp.body?.string().orEmpty()
+                val json = JSONObject(body)
+                val status = json.optInt("Status", -1)
+                val answers = json.optJSONArray("Answer")
+                val ips = mutableListOf<InetAddress>()
+                if (status == 0 && answers != null) {
+                    for (i in 0 until answers.length()) {
+                        val ans = answers.optJSONObject(i) ?: continue
+                        val type = ans.optInt("type", -1)
+                        if (type == 1 || type == 28) {
+                            val data = ans.optString("data", "").trim()
+                            if (data.isNotEmpty()) {
+                                try {
+                                    val addr = InetAddress.getByName(data)
+                                    if (!isSinkholeOrInvalid(addr)) ips.add(addr)
+                                } catch (_: Exception) {
                                 }
                             }
                         }
-                        if (ips.isNotEmpty()) {
-                            return ips to "doh:$label"
-                        }
-                        errors.add("$label($qType)=empty(dnsStatus=$status)")
                     }
-                } catch (t: Throwable) {
-                    errors.add("$label($qType)=${t.javaClass.simpleName}")
                 }
+                if (ips.isEmpty()) {
+                    throw UnknownHostException("$label($qType)=empty(dnsStatus=$status)")
+                }
+                return ips to "doh:$label"
+            }
+        } catch (t: Throwable) {
+            if (t is UnknownHostException) throw t
+            throw UnknownHostException("$label($qType)=${t.javaClass.simpleName}")
+        }
+    }
+
+    fun resolveViaDohOnly(hostname: String, bypassCooldown: Boolean = false): Pair<List<InetAddress>, String> {
+        if (!bypassCooldown && lastAllDohFailedAtMs > 0L) {
+            val sinceFail = SystemClock.elapsedRealtime() - lastAllDohFailedAtMs
+            if (sinceFail in 0 until DOH_OUTAGE_COOLDOWN_MS) {
+                throw UnknownHostException("Внешние DoH-серверы (1.1.1.1 / 8.8.8.8) не отвечают — блокировка трафика приложению или нет интернета")
             }
         }
-        throw UnknownHostException("DoH failed for $hostname: ${errors.joinToString(", ")}")
+
+        val allErrors = mutableListOf<String>()
+        for (qType in listOf("A", "AAAA")) {
+            val ecs = ExecutorCompletionService<Pair<List<InetAddress>, String>>(dnsExecutor)
+            val activeCalls = CopyOnWriteArrayList<Call>()
+            val futures = dohEndpoints.map { (label, baseUrl) ->
+                ecs.submit(Callable { queryDohSingle(hostname, qType, label, baseUrl, activeCalls) })
+            }
+            val deadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DOH_RACE_TIMEOUT_MS)
+            var gotTimeout = false
+            try {
+                for (i in futures.indices) {
+                    val remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNs - System.nanoTime())
+                    if (remainingMs <= 0L) {
+                        gotTimeout = true
+                        break
+                    }
+                    val completed = ecs.poll(remainingMs, TimeUnit.MILLISECONDS)
+                    if (completed == null) {
+                        gotTimeout = true
+                        break
+                    }
+                    try {
+                        val res = completed.get()
+                        if (res.first.isNotEmpty()) {
+                            lastAllDohFailedAtMs = 0L
+                            return res
+                        }
+                    } catch (ee: ExecutionException) {
+                        val msg = ee.cause?.message ?: ee.message ?: "error"
+                        allErrors.add(msg)
+                        if (msg.contains("SocketTimeoutException")) gotTimeout = true
+                    }
+                }
+            } finally {
+                activeCalls.forEach { runCatching { it.cancel() } }
+                futures.forEach { it.cancel(true) }
+            }
+
+            // If IPv4 (A) timed out across all 4 DoH servers, AAAA will time out on the same blocked socket too.
+            if (gotTimeout && qType == "A") {
+                allErrors.add("timeout")
+                break
+            }
+        }
+
+        lastAllDohFailedAtMs = SystemClock.elapsedRealtime()
+        Log.e(TAG, "DoH race failed for $hostname: ${allErrors.joinToString(", ")}")
+        throw UnknownHostException("Нет ответа от 1.1.1.1 / 8.8.8.8 (проверь Wi-Fi, VPN или доступ приложения в сеть в настройках HyperOS)")
     }
 
     val resilientDns = object : Dns {
@@ -151,13 +243,18 @@ object ResilientNetwork {
                 return cached.addresses
             }
 
+            checkNetworkPrecondition()?.let { reason ->
+                lastResolutionSource[cleanHost] = "no-network"
+                throw UnknownHostException(reason)
+            }
+
             try {
                 val sysAddrs = resolveSystemDnsOnly(cleanHost)
                 dnsCache[cleanHost] = CachedDnsEntry(sysAddrs, "system", now + DOH_CACHE_TTL_MS)
                 lastResolutionSource[cleanHost] = "system"
                 return sysAddrs
             } catch (sysErr: UnknownHostException) {
-                Log.w(TAG, "System DNS failed for $cleanHost (${sysErr.message}), falling back to DoH...")
+                Log.w(TAG, "System DNS failed for $cleanHost (${sysErr.message}), falling back to parallel DoH...")
             }
 
             val (dohAddrs, source) = resolveViaDohOnly(cleanHost)
@@ -265,8 +362,8 @@ object ResilientNetwork {
         } catch (t: Throwable) {
             invalidateDns(urlString)
             val elapsed = SystemClock.elapsedRealtime() - startedAtMs
-            val msg = "${t.javaClass.simpleName}: ${t.message ?: "Network error"}"
-            Log.e(TAG, "HTTP failed host=$host ($msg)")
+            val msg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+            Log.e(TAG, "HTTP failed host=$host (${t.javaClass.simpleName}: $msg)")
             HttpResponse(
                 ok = false,
                 status = 0,
@@ -299,6 +396,16 @@ object ResilientNetwork {
             out.put("vpnActive", caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true)
             out.put("transports", if (transports.isEmpty()) "Нет сети" else transports.joinToString(" + "))
 
+            if (links != null) {
+                val dnsList = links.dnsServers.mapNotNull { it.hostAddress }.filter { it.isNotBlank() }
+                out.put("dnsServers", if (dnsList.isEmpty()) "Нет" else dnsList.joinToString(", "))
+                val proxy = links.httpProxy
+                out.put("httpProxy", if (proxy != null && !proxy.host.isNullOrBlank()) "${proxy.host}:${proxy.port}" else "Нет")
+            } else {
+                out.put("dnsServers", "Нет")
+                out.put("httpProxy", "Нет")
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && links != null) {
                 val privDns = links.privateDnsServerName
                 out.put("privateDnsActive", links.isPrivateDnsActive)
@@ -330,7 +437,7 @@ object ResilientNetwork {
 
         val dohStart = SystemClock.elapsedRealtime()
         try {
-            val (dohAddrs, src) = resolveViaDohOnly(hostname)
+            val (dohAddrs, src) = resolveViaDohOnly(hostname, bypassCooldown = true)
             out.put("dohOk", true)
             out.put("dohSource", src)
             out.put("dohIp", dohAddrs.firstOrNull()?.hostAddress ?: "")

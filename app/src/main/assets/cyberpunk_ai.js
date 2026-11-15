@@ -796,6 +796,8 @@ function handleModelsLoadedForRole(role, resStr) {
 window.onTrainerModelsLoaded = (resStr) => handleModelsLoadedForRole("trainer", resStr);
 window.onVisionModelsLoaded = (resStr) => handleModelsLoadedForRole("vision", resStr);
 
+let webViewProbeSummary = "";
+
 function setGlobalDiagBusy(busy) {
     const btn = document.getElementById("btnTestGeminiKey");
     if (btn) {
@@ -816,6 +818,14 @@ function renderKeyDiagLine(label, testObj) {
     }
     return `<div>• <b>${escapeHtml(label)} (${escapeHtml(testObj.keyTag || "")}):</b> <span class="text-danger">❌ HTTP ${testObj.status || 0}</span><div class="text-danger" style="white-space:pre-wrap;padding-left:10px;">${escapeHtml(testObj.error || "Ошибка")}</div></div>`;
 }
+
+window.openAppTrafficSettingsUI = () => {
+    if (window.AndroidBridge && window.AndroidBridge.openAppDetailsSettings) {
+        window.AndroidBridge.openAppDetailsSettings();
+    } else {
+        showToast("Доступно только в Android APK");
+    }
+};
 
 window.onGlobalNetworkDiagnosticsResult = (resStr) => {
     setGlobalDiagBusy(false);
@@ -853,9 +863,17 @@ window.onGlobalNetworkDiagnosticsResult = (resStr) => {
         const visionHtml = renderKeyDiagLine("Gemini Фотограф", d.visionKeyTest);
 
         const privDnsText = net.privateDnsActive ? `ВКЛ (${net.privateDnsHost || "системный"})` : "Выкл";
+        const hasAnyBlock = !net.connected || (!sirenOk && !weatherOk);
+        const helpTip = hasAnyBlock
+            ? `<div class="text-warning mt-1">⚠️ У самого приложения нет выхода в интернет. На Redmi/HyperOS зайди в <b>О приложении → Сетевые подключения (Трафик)</b> и проверь галочки Wi-Fi/Мобильный интернет, либо проверь настройки VPN (исключения / «Блокировать без VPN»).</div>
+               <button class="btn btn-outline btn-sm mt-1" onclick="openAppTrafficSettingsUI()">📲 Открыть «О приложении» (Трафик)</button>`
+            : "";
+
         statusBox.innerHTML = `
             <div class="card flex-col gap-1 mt-1" style="background:#0d1117;padding:10px;border:1px solid var(--border);">
-                <div><b>1. Сеть устройства:</b> <span class="${netColor}">${net.connected ? "Онлайн" : "Нет интернета"}</span> · ${escapeHtml(net.transports || "—")} · VPN: <b>${net.vpnActive ? "ВКЛ" : "Выкл"}</b> · Private DNS: <b>${escapeHtml(privDnsText)}</b></div>
+                <div><b>1. Сеть устройства:</b> <span class="${netColor}">${net.connected ? "Онлайн" : "Нет интернета"}</span> · ${escapeHtml(net.transports || "—")} · VPN: <b>${net.vpnActive ? "ВКЛ" : "Выкл"}</b></div>
+                <div class="text-muted">Private DNS: <b>${escapeHtml(privDnsText)}</b> · DNS: ${escapeHtml(net.dnsServers || "—")} · Proxy: ${escapeHtml(net.httpProxy || "Нет")}</div>
+                <div class="text-muted">WebView сеть: ${webViewProbeSummary || "—"}</div>
                 <div class="mt-1"><b>2. DNS и обход блокировок (Системный / DoH):</b></div>
                 ${dnsRows}
                 <div class="mt-1"><b>3. Фоновые сервисы:</b></div>
@@ -864,6 +882,7 @@ window.onGlobalNetworkDiagnosticsResult = (resStr) => {
                 <div class="mt-1"><b>4. Проверка ключей Gemini:</b></div>
                 ${trainerHtml}
                 ${visionHtml}
+                ${helpTip}
             </div>
         `;
 
@@ -872,12 +891,30 @@ window.onGlobalNetworkDiagnosticsResult = (resStr) => {
         } else if (net.connected && d.services?.siren?.ok) {
             showToast("ℹ️ Сеть работает, смотри детали по ключу ниже");
         } else {
-            showToast("⚠️ Смотри отчёт диагностики сети");
+            showToast("⚠️ Нет доступа к сети у приложения — смотри отчёт");
         }
     } catch (e) {
         statusBox.innerHTML = `<span class="text-danger">❌ Ошибка разбора диагностики: ${escapeHtml(e.message)}</span>`;
     }
 };
+
+async function runWebViewNetworkProbe() {
+    try {
+        const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+        const tId = ctrl ? setTimeout(() => ctrl.abort(), 4500) : null;
+        const started = Date.now();
+        await fetch("https://generativelanguage.googleapis.com/", {
+            method: "HEAD",
+            mode: "no-cors",
+            cache: "no-store",
+            signal: ctrl ? ctrl.signal : undefined
+        });
+        if (tId) clearTimeout(tId);
+        webViewProbeSummary = `<span class="text-success">✅ Доступ есть (${Date.now() - started}мс)</span>`;
+    } catch (e) {
+        webViewProbeSummary = `<span class="text-danger">❌ Заблокирован (${escapeHtml(e?.name || e?.message || "таймаут")})</span>`;
+    }
+}
 
 window.runGlobalNetworkDiagnosticsUI = async () => {
     if (!window.assertVaultUnlocked()) return;
@@ -885,11 +922,13 @@ window.runGlobalNetworkDiagnosticsUI = async () => {
     const keys = AppState.apiKeys || {};
     const statusBox = document.getElementById("geminiTestStatus");
     setGlobalDiagBusy(true);
+    webViewProbeSummary = "⏳ проверка...";
     if (statusBox) {
         statusBox.innerHTML = "<span class='text-primary'>🌐 Проверяю сеть, VPN/Private DNS, DoH (1.1.1.1 / 8.8.8.8), ключи Gemini, радар тревог и погоду...</span>";
     }
 
     if (window.AndroidBridge && window.AndroidBridge.runGlobalNetworkDiagnosticsAsync) {
+        await runWebViewNetworkProbe();
         window.AndroidBridge.runGlobalNetworkDiagnosticsAsync(
             keys.trainerKey || "",
             keys.visionKey || "",

@@ -125,6 +125,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT)
         )
 
+        ResilientNetwork.init(applicationContext)
         vaultManager = VaultManager(applicationContext)
 
         filePickerLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -692,14 +693,19 @@ class WebAppInterface(
         try {
             activity.startActivity(miuiIntent)
         } catch (_: Exception) {
-            try {
-                activity.startActivity(
-                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                    }
-                )
-            } catch (_: Exception) {
-            }
+            openAppDetailsSettings()
+        }
+    }
+
+    @JavascriptInterface
+    fun openAppDetailsSettings() {
+        try {
+            activity.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                }
+            )
+        } catch (_: Exception) {
         }
     }
 
