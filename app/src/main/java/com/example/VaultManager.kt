@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.webkit.CookieManager
 import android.webkit.WebStorage
 import org.json.JSONObject
 import java.io.File
@@ -24,6 +25,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class VaultManager(private val context: Context) {
     private val vaultFile = File(context.noBackupFilesDir, "tank_state.bin")
+    private val vaultTempFile = File(context.noBackupFilesDir, "tank_state.bin.tmp")
     private val metaPrefs = context.getSharedPreferences("TankVaultMeta", Context.MODE_PRIVATE)
 
     private val keyAlias = "veiny_tank_hw_pepper_v1"
@@ -38,6 +40,9 @@ class VaultManager(private val context: Context) {
         private var activeSlot: Int = -1
         private var sessionKeyBytes: ByteArray? = null
         private var sessionSalt: ByteArray? = null
+
+        @Volatile
+        var webViewWipeHook: (() -> Unit)? = null
 
         fun hasActiveSession(): Boolean = synchronized(sessionLock) {
             activeSlot in 0..1 && sessionKeyBytes != null && sessionSalt != null
@@ -56,11 +61,10 @@ class VaultManager(private val context: Context) {
         }
     }
 
-    init {
-        ensureHardwareKeys()
-    }
-
     fun isInitialized(): Boolean {
+        if (vaultTempFile.exists() && vaultFile.exists() && vaultFile.length() >= slotSize * 2L) {
+            vaultTempFile.delete()
+        }
         return vaultFile.exists() &&
             vaultFile.length() >= slotSize * 2L &&
             metaPrefs.getBoolean("vault_ready", false)
@@ -88,9 +92,9 @@ class VaultManager(private val context: Context) {
         }
     }
 
-    private fun ensureVaultContainer() {
-        if (!vaultFile.exists() || vaultFile.length() != slotSize * 2L) {
-            RandomAccessFile(vaultFile, "rw").use { raf ->
+    private fun ensureVaultContainer(target: File = vaultFile) {
+        if (!target.exists() || target.length() != slotSize * 2L) {
+            RandomAccessFile(target, "rw").use { raf ->
                 raf.setLength(slotSize * 2L)
                 val buf = ByteArray(65536)
                 val sr = SecureRandom()
@@ -106,6 +110,7 @@ class VaultManager(private val context: Context) {
     }
 
     private fun deriveSlotKeyBytes(pin: String, salt: ByteArray): ByteArray {
+        ensureHardwareKeys()
         val spec = PBEKeySpec(pin.toCharArray(), salt, pbkdf2Iterations, 256)
         val pbkdf2Bytes = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
             .generateSecret(spec).encoded
@@ -120,6 +125,7 @@ class VaultManager(private val context: Context) {
     }
 
     private fun computePanicMac(pin: String): String {
+        ensureHardwareKeys()
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val pKey = ks.getKey(panicAlias, null) as SecretKey
         val mac = Mac.getInstance("HmacSHA256").apply { init(pKey) }
@@ -130,16 +136,15 @@ class VaultManager(private val context: Context) {
     private fun writeFullFixedSlot(slotIndex: Int, salt: ByteArray, keyBytes: ByteArray, jsonPayload: ByteArray) {
         require(slotIndex in 0..1)
         require(salt.size == 16 && keyBytes.size == 32)
-        ensureVaultContainer()
 
         val plaintextCapacity = slotSize - headerSize - gcmTagBytes
         require(jsonPayload.size <= plaintextCapacity - 4) { "State exceeds 2 MB slot capacity" }
 
         val sr = SecureRandom()
         val iv = ByteArray(12).also { sr.nextBytes(it) }
+        // Zero-padded full-slot buffer: AES-256-GCM guarantees IND-CPA ciphertext
+        // indistinguishable from uniform noise without burning 2 MB SecureRandom CPU per save.
         val plainBuf = ByteArray(plaintextCapacity)
-        // Fill entire slot payload with random padding first, then write 4B actual length + JSON
-        sr.nextBytes(plainBuf)
         ByteBuffer.wrap(plainBuf, 0, 4).putInt(jsonPayload.size)
         System.arraycopy(jsonPayload, 0, plainBuf, 4, jsonPayload.size)
 
@@ -149,16 +154,52 @@ class VaultManager(private val context: Context) {
         val ciphertext = cipher.doFinal(plainBuf)
         plainBuf.fill(0)
 
-        RandomAccessFile(vaultFile, "rw").use { raf ->
-            raf.seek((slotIndex * slotSize).toLong())
-            raf.write(salt)
-            raf.write(iv)
-            raf.write(ciphertext)
-            raf.fd.sync()
+        // Atomic write via temp container + fsync + renameTo so kill mid-write never bricks vaultFile
+        if (vaultTempFile.exists()) vaultTempFile.delete()
+        val otherSlot = 1 - slotIndex
+        RandomAccessFile(vaultTempFile, "rw").use { tmpRaf ->
+            tmpRaf.setLength(slotSize * 2L)
+            val copyBuf = ByteArray(65536)
+            val chunks = slotSize / copyBuf.size
+            if (vaultFile.exists() && vaultFile.length() == slotSize * 2L) {
+                RandomAccessFile(vaultFile, "r").use { srcRaf ->
+                    srcRaf.seek((otherSlot * slotSize).toLong())
+                    tmpRaf.seek((otherSlot * slotSize).toLong())
+                    repeat(chunks) {
+                        srcRaf.readFully(copyBuf)
+                        tmpRaf.write(copyBuf)
+                    }
+                }
+            } else {
+                tmpRaf.seek((otherSlot * slotSize).toLong())
+                repeat(chunks) {
+                    sr.nextBytes(copyBuf)
+                    tmpRaf.write(copyBuf)
+                }
+            }
+
+            tmpRaf.seek((slotIndex * slotSize).toLong())
+            tmpRaf.write(salt)
+            tmpRaf.write(iv)
+            tmpRaf.write(ciphertext)
+            tmpRaf.fd.sync()
+        }
+
+        if (!vaultTempFile.renameTo(vaultFile)) {
+            ensureVaultContainer(vaultFile)
+            RandomAccessFile(vaultFile, "rw").use { raf ->
+                raf.seek((slotIndex * slotSize).toLong())
+                raf.write(salt)
+                raf.write(iv)
+                raf.write(ciphertext)
+                raf.fd.sync()
+            }
+            vaultTempFile.delete()
         }
     }
 
     private fun readAndDecryptSlot(slotIndex: Int, pin: String): Triple<ByteArray, ByteArray, String>? {
+        if (!vaultFile.exists() || vaultFile.length() < slotSize * 2L) return null
         val salt = ByteArray(16)
         val iv = ByteArray(12)
         val ciphertext = ByteArray(slotSize - headerSize)
@@ -204,20 +245,21 @@ class VaultManager(private val context: Context) {
         if (realPin.length < 4) return false
 
         ensureHardwareKeys()
-        ensureVaultContainer()
+        if (vaultFile.exists()) vaultFile.delete()
+        if (vaultTempFile.exists()) vaultTempFile.delete()
 
         val sr = SecureRandom()
         val realSalt = ByteArray(16).also { sr.nextBytes(it) }
         val realKey = deriveSlotKeyBytes(realPin, realSalt)
         writeFullFixedSlot(0, realSalt, realKey, initialRealJson.toByteArray(Charsets.UTF_8))
-
-        // Initialize Slot 1 with indistinguishable full-slot ciphertext on an ephemeral random key
         writeRandomDummySlot1()
 
         metaPrefs.edit()
             .putBoolean("vault_ready", true)
+            .putInt("failed_attempts", 0)
+            .putLong("lockout_until_ms", 0L)
             .remove("panic_mac")
-            .apply()
+            .commit()
 
         synchronized(sessionLock) {
             sessionKeyBytes?.fill(0)
@@ -237,6 +279,15 @@ class VaultManager(private val context: Context) {
             return out.toString()
         }
 
+        val now = System.currentTimeMillis()
+        val lockoutUntil = metaPrefs.getLong("lockout_until_ms", 0L)
+        if (now < lockoutUntil) {
+            val waitSeconds = ((lockoutUntil - now + 999L) / 1000L).coerceAtLeast(1L)
+            out.put("status", "THROTTLED")
+            out.put("waitSeconds", waitSeconds)
+            return out.toString()
+        }
+
         if (isPanicPin(pin)) {
             executeCryptoShredding()
             out.put("status", "WIPED")
@@ -249,6 +300,10 @@ class VaultManager(private val context: Context) {
             val result = readAndDecryptSlot(slot, pin)
             if (result != null) {
                 val (salt, keyBytes, jsonStr) = result
+                metaPrefs.edit()
+                    .putInt("failed_attempts", 0)
+                    .putLong("lockout_until_ms", 0L)
+                    .commit()
                 synchronized(sessionLock) {
                     sessionKeyBytes?.fill(0)
                     sessionSalt?.fill(0)
@@ -263,7 +318,21 @@ class VaultManager(private val context: Context) {
             }
         }
 
+        val fails = metaPrefs.getInt("failed_attempts", 0) + 1
+        val cooldownSec = when {
+            fails < 5 -> 0L
+            fails == 5 -> 5L
+            fails == 6 -> 15L
+            fails == 7 -> 30L
+            else -> 60L
+        }
+        metaPrefs.edit()
+            .putInt("failed_attempts", fails)
+            .putLong("lockout_until_ms", if (cooldownSec > 0) now + cooldownSec * 1000L else 0L)
+            .commit()
+
         out.put("status", "DENIED")
+        if (cooldownSec > 0) out.put("waitSeconds", cooldownSec)
         return out.toString()
     }
 
@@ -316,11 +385,18 @@ class VaultManager(private val context: Context) {
         val currentSlot = synchronized(sessionLock) { activeSlot }
         if (currentSlot != 0) return "DENIED"
 
+        // Validate ALL inputs strictly BEFORE mutating Slot 1 or preferences
+        if (decoyPin.isNotBlank() && (decoyPin.length < 4 || decoyPin == realPin)) {
+            return "INVALID_DECOY"
+        }
+        if (panicPin.isNotBlank() && (panicPin.length < 4 || panicPin == realPin || panicPin == decoyPin)) {
+            return "INVALID_PANIC"
+        }
+
         val decrypted = readAndDecryptSlot(0, realPin) ?: return "WRONG_REAL_PIN"
         decrypted.second.fill(0)
 
         if (decoyPin.isNotBlank()) {
-            if (decoyPin.length < 4 || decoyPin == realPin) return "INVALID_DECOY"
             val sr = SecureRandom()
             val decoySalt = ByteArray(16).also { sr.nextBytes(it) }
             val decoyKey = deriveSlotKeyBytes(decoyPin, decoySalt)
@@ -333,12 +409,11 @@ class VaultManager(private val context: Context) {
 
         val editor = metaPrefs.edit()
         if (panicPin.isNotBlank()) {
-            if (panicPin.length < 4 || panicPin == realPin || panicPin == decoyPin) return "INVALID_PANIC"
             editor.putString("panic_mac", computePanicMac(panicPin))
         } else {
             editor.remove("panic_mac")
         }
-        editor.apply()
+        editor.commit()
         return "OK"
     }
 
@@ -360,6 +435,7 @@ class VaultManager(private val context: Context) {
         if (ks.containsAlias(panicAlias)) ks.deleteEntry(panicAlias)
         ensureHardwareKeys()
 
+        if (vaultTempFile.exists()) vaultTempFile.delete()
         if (vaultFile.exists()) {
             RandomAccessFile(vaultFile, "rw").use { raf ->
                 val noise = ByteArray(65536)
@@ -374,10 +450,13 @@ class VaultManager(private val context: Context) {
             }
             vaultFile.delete()
         }
-        metaPrefs.edit().clear().apply()
+        metaPrefs.edit().clear().commit()
+        WaterSyncBus.clearAll(context)
         Handler(Looper.getMainLooper()).post {
             try {
+                webViewWipeHook?.invoke()
                 WebStorage.getInstance().deleteAllData()
+                CookieManager.getInstance().removeAllCookies(null)
             } catch (_: Exception) {
             }
         }

@@ -1,14 +1,17 @@
 package com.example
 
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
 object AirAlertHelper {
 
     private const val REGIONS_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
+    private const val ALERTS_COALESCE_MS = 5_000L
 
     private data class CityMatcher(
         val cityKey: String,
@@ -155,7 +158,56 @@ object AirAlertHelper {
         }
     }
 
-    private fun getOrFetchSirenRegionsIndex(): JSONObject {
+    private val fetchLock = Any()
+
+    @Volatile
+    private var lastFetchAtMs: Long = 0L
+
+    @Volatile
+    private var lastTokenHash: String = ""
+
+    @Volatile
+    private var lastResultJson: String? = null
+
+    fun isValidSirenAlertsPayload(raw: String): Boolean {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return false
+        return try {
+            val parsed = JSONTokener(trimmed).nextValue()
+            when (parsed) {
+                is JSONArray -> true // empty [] = valid "no active alerts"
+                is JSONObject -> parsed.has("activeAlerts") || parsed.has("alerts")
+                else -> false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isValidAlertsInUaPayload(raw: String): Boolean {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return false
+        return try {
+            val obj = JSONObject(trimmed)
+            obj.has("alerts") && obj.optJSONArray("alerts") != null
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isValidUbillingPayload(raw: String): Boolean {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return false
+        return try {
+            val obj = JSONObject(trimmed)
+            if (obj.has("error") && !obj.has("states") && !obj.has("state")) return false
+            obj.optJSONObject("states") != null || obj.optJSONObject("state") != null
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun getOrFetchSirenRegionsIndex(context: Context?): JSONObject {
         val now = System.currentTimeMillis()
         cachedRegionsIndex?.let { cached ->
             if (cached.length() > 0 && (now - cachedRegionsAtMs) < REGIONS_CACHE_TTL_MS) {
@@ -168,12 +220,30 @@ object AirAlertHelper {
                     return cached
                 }
             }
+            val cacheFile = context?.let { File(it.filesDir, "siren_regions_cache.json") }
+            if (cacheFile != null && cacheFile.exists() &&
+                (System.currentTimeMillis() - cacheFile.lastModified()) < REGIONS_CACHE_TTL_MS
+            ) {
+                try {
+                    val diskObj = JSONObject(cacheFile.readText(Charsets.UTF_8))
+                    if (diskObj.length() > 0) {
+                        cachedRegionsIndex = diskObj
+                        cachedRegionsAtMs = cacheFile.lastModified()
+                        return diskObj
+                    }
+                } catch (_: Exception) {
+                }
+            }
             val res = httpGet("https://siren.pp.ua/api/v3/regions", null, 6_000, 8_000)
             if (res.first in 200..299 && isValidJsonPayload(res.second)) {
                 val parsed = parseSirenRegionsIndex(res.second)
                 if (parsed.length() > 0) {
                     cachedRegionsIndex = parsed
                     cachedRegionsAtMs = System.currentTimeMillis()
+                    try {
+                        cacheFile?.writeText(parsed.toString(), Charsets.UTF_8)
+                    } catch (_: Exception) {
+                    }
                     return parsed
                 }
             }
@@ -181,8 +251,25 @@ object AirAlertHelper {
         }
     }
 
-    fun fetchAlertsWithFallback(alertsInUaToken: String): String {
+    fun fetchAlertsWithFallback(alertsInUaToken: String, context: Context? = null): String {
         val token = alertsInUaToken.trim()
+        val tokenKey = if (token.isEmpty()) "" else token.hashCode().toString()
+        synchronized(fetchLock) {
+            val now = System.currentTimeMillis()
+            val prev = lastResultJson
+            if (prev != null && tokenKey == lastTokenHash && (now - lastFetchAtMs) < ALERTS_COALESCE_MS) {
+                return prev
+            }
+
+            val fresh = fetchAlertsUncoalesced(token, context)
+            lastResultJson = fresh
+            lastTokenHash = tokenKey
+            lastFetchAtMs = System.currentTimeMillis()
+            return fresh
+        }
+    }
+
+    private fun fetchAlertsUncoalesced(token: String, context: Context?): String {
         var fallbackNote = ""
 
         if (token.isNotEmpty()) {
@@ -192,7 +279,7 @@ object AirAlertHelper {
                 connectMs = 8_000,
                 readMs = 10_000
             )
-            if (alertsInUaRes.first in 200..299 && isValidJsonPayload(alertsInUaRes.second)) {
+            if (alertsInUaRes.first in 200..299 && isValidAlertsInUaPayload(alertsInUaRes.second)) {
                 return JSONObject()
                     .put("ok", true)
                     .put("source", "alerts.in.ua")
@@ -203,14 +290,14 @@ object AirAlertHelper {
         }
 
         // Primary keyless radar with city/district/hromada precision: siren.pp.ua
-        val regionsIndex = getOrFetchSirenRegionsIndex()
+        val regionsIndex = getOrFetchSirenRegionsIndex(context)
         val sirenRes = httpGet(
             urlString = "https://siren.pp.ua/api/v3/alerts",
             bearerToken = null,
             connectMs = 8_000,
             readMs = 10_000
         )
-        if (sirenRes.first in 200..299 && isValidJsonPayload(sirenRes.second)) {
+        if (sirenRes.first in 200..299 && isValidSirenAlertsPayload(sirenRes.second)) {
             return JSONObject()
                 .put("ok", true)
                 .put("source", "siren.pp.ua")
@@ -235,7 +322,7 @@ object AirAlertHelper {
             connectMs = 8_000,
             readMs = 10_000
         )
-        if (ubillingRes.first in 200..299 && isValidJsonPayload(ubillingRes.second)) {
+        if (ubillingRes.first in 200..299 && isValidUbillingPayload(ubillingRes.second)) {
             val combinedNote = listOf(fallbackNote, sirenFailNote).filter { it.isNotEmpty() }.joinToString("; ")
             return JSONObject()
                 .put("ok", true)

@@ -204,15 +204,19 @@ window.buildWeeklyFeaturePack = () => {
             stress_events: recentEvents.filter(e => e.type === "stress").length,
             pvt_series: (AppState.pvtHistory || []).slice(-10)
         }
-    });
+    }).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 };
+
+let chatInFlight = false;
 
 window.sendChatMessage = async (overrideMsg = null) => {
     if (!window.assertVaultUnlocked()) return;
+    if (chatInFlight) return showToast("⏳ Дождись ответа тренера...");
     const inputEl = document.getElementById("chatInput");
     const msg = (overrideMsg || inputEl.value).trim();
     if (!msg) return;
 
+    chatInFlight = true;
     appendChatMessage("Вы", msg);
     if (!overrideMsg) inputEl.value = "";
 
@@ -225,13 +229,20 @@ window.sendChatMessage = async (overrideMsg = null) => {
 ${weeklyData}
 </untrusted_user_data>`;
 
-    appendChatMessage("Тренер", "🤔 Анализирую...");
-    const res = await window.AIRouter.callGemini(
-        "trainer",
-        [{ role: "user", parts: [{ text: msg }] }],
-        { systemInstruction, temperature: 0.5, json: false }
-    );
-    removeLastMessage();
+    const placeholderEl = appendChatMessage("Тренер", "🤔 Анализирую...");
+    let res;
+    try {
+        res = await window.AIRouter.callGemini(
+            "trainer",
+            [{ role: "user", parts: [{ text: msg }] }],
+            { systemInstruction, temperature: 0.5, json: false }
+        );
+    } finally {
+        chatInFlight = false;
+        if (placeholderEl && placeholderEl.parentNode) {
+            placeholderEl.parentNode.removeChild(placeholderEl);
+        }
+    }
 
     const badge = res.source === "cache"
         ? "📦 Кэш"
@@ -247,7 +258,7 @@ window.generate14DayDigest = () => {
 
 function appendChatMessage(sender, text, badge = null) {
     const hist = document.getElementById("chatHistory");
-    if (!hist) return;
+    if (!hist) return null;
     const div = document.createElement("div");
     div.className = "p-2 " + (sender === "Вы" ? "text-right" : "text-left");
     let inner = `<strong class="text-sm ${sender === "Вы" ? "text-primary" : "text-success"}">${escapeHtml(sender)}</strong><br><span style="white-space:pre-wrap;">${escapeHtml(text)}</span>`;
@@ -255,11 +266,7 @@ function appendChatMessage(sender, text, badge = null) {
     div.innerHTML = inner;
     hist.appendChild(div);
     hist.scrollTop = hist.scrollHeight;
-}
-
-function removeLastMessage() {
-    const hist = document.getElementById("chatHistory");
-    if (hist && hist.lastChild) hist.removeChild(hist.lastChild);
+    return div;
 }
 
 // --- Photo Food Vision (accepts pre-compressed JPEG Base64 from Kotlin or browser fallback) ---
@@ -448,14 +455,27 @@ window.saveSettings = () => {
 
 window.refreshExactAlarmStatus = () => {
     const el = document.getElementById("exactAlarmStatusText");
-    if (!el) return;
-    if (window.AndroidBridge && window.AndroidBridge.canScheduleExactAlarms) {
-        const ok = window.AndroidBridge.canScheduleExactAlarms();
-        el.innerHTML = ok
-            ? "<span class='text-success'>✅ Точные будильники (SCHEDULE_EXACT_ALARM) разрешены.</span>"
-            : "<span class='text-warning'>⚠️ Нет права на точные будильники — нажми кнопку ниже.</span>";
-    } else {
-        el.innerText = "Режим браузера (нативный AlarmManager недоступен).";
+    if (el) {
+        if (window.AndroidBridge && window.AndroidBridge.canScheduleExactAlarms) {
+            const ok = window.AndroidBridge.canScheduleExactAlarms();
+            el.innerHTML = ok
+                ? "<span class='text-success'>✅ Точные будильники (SCHEDULE_EXACT_ALARM) разрешены.</span>"
+                : "<span class='text-warning'>⚠️ Нет права на точные будильники — нажми кнопку ниже.</span>";
+        } else {
+            el.innerText = "Режим браузера (нативный AlarmManager недоступен).";
+        }
+    }
+
+    const batEl = document.getElementById("batteryOptStatusText");
+    if (batEl) {
+        if (window.AndroidBridge && window.AndroidBridge.isIgnoringBatteryOptimizations) {
+            const ignored = window.AndroidBridge.isIgnoringBatteryOptimizations();
+            batEl.innerHTML = ignored
+                ? "<span class='text-success'>✅ Экономия АКБ отключена для «Жилистый Танк».</span>"
+                : "<span class='text-warning'>⚠️ Включено ограничение АКБ HyperOS — рекомендуется «Без ограничений».</span>";
+        } else {
+            batEl.innerText = "Режим браузера (проверка АКБ недоступна).";
+        }
     }
 };
 

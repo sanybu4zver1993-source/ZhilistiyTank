@@ -24,6 +24,9 @@
                 window.AndroidBridge.lockVaultSessionNow();
             }
             if (window.stopAllSosTimers) window.stopAllSosTimers();
+            if (window.suspendAudioCtx) window.suspendAudioCtx();
+            if (window.AIRouter) window.AIRouter.cache = {};
+            if (window.createDefaultState) window.AppState = window.createDefaultState();
             document.body.classList.remove('lockscreen-sos-mode');
             if (window.closeAppModal) window.closeAppModal();
             if (window.wipeRuntimeSensitiveDom) window.wipeRuntimeSensitiveDom();
@@ -36,7 +39,12 @@
         };
 
         document.addEventListener('visibilitychange', function () {
-            if (document.hidden && !(window.AndroidBridge && window.AndroidBridge.hasActiveVaultSession)) {
+            const bridgeActive = Boolean(
+                window.AndroidBridge &&
+                window.AndroidBridge.hasActiveVaultSession &&
+                window.AndroidBridge.hasActiveVaultSession()
+            );
+            if (document.hidden && !bridgeActive) {
                 window.onAppBackgrounded();
             }
         });
@@ -542,6 +550,7 @@
                     <div class="card flex-col gap-2 mb-2" style="border-color:rgba(241,196,15,0.4);">
                         <h3 class="text-warning" style="margin:0;">🛠 HyperOS / Android 15 (Redmi 13C)</h3>
                         <p id="exactAlarmStatusText" class="text-xs text-muted">Проверка прав AlarmManager...</p>
+                        <p id="batteryOptStatusText" class="text-xs text-muted">Проверка режима экономии АКБ...</p>
                         <div class="grid-2 gap-2">
                             <button class="btn btn-outline btn-sm" onclick="openExactAlarmSettingsUI()">⏰ Право будильника</button>
                             <button class="btn btn-outline btn-sm" onclick="testNotificationBridge()">🔔 Тест пуша</button>

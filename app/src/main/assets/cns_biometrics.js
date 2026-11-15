@@ -107,11 +107,17 @@ const CNSAnalytics = (() => {
         const paired = [];
 
         for (let i = 0; i < sortedDays.length - 1; i++) {
-            const today = byDay[sortedDays[i]];
-            const nextDay = byDay[sortedDays[i + 1]];
+            const curDayStr = sortedDays[i];
+            const nextDayStr = sortedDays[i + 1];
+            const curMs = Date.parse(curDayStr + "T00:00:00Z");
+            const nextMs = Date.parse(nextDayStr + "T00:00:00Z");
+            if (Math.round((nextMs - curMs) / 86400000) !== 1) continue;
+
+            const today = byDay[curDayStr];
+            const nextDay = byDay[nextDayStr];
             if (nextDay.pvtMedians.length > 0 && today.sleepHours !== null) {
                 paired.push({
-                    date: sortedDays[i],
+                    date: curDayStr,
                     nextMorningPvtMedianMs: median(nextDay.pvtMedians),
                     lateCaffeineMg: today.lateCaffeineMg,
                     sleepHours: today.sleepHours,
@@ -124,15 +130,24 @@ const CNSAnalytics = (() => {
         return paired;
     }
 
+    let cachedTriggersKey = null;
+    let cachedTriggersRes = null;
+
     function discoverTriggers() {
         const valid = buildDailyRecords();
+        const fp = valid.length + ":" + (valid[valid.length - 1]?.date || "") + ":" + (AppState.events?.length || 0);
+        if (cachedTriggersKey === fp && cachedTriggersRes) {
+            return cachedTriggersRes;
+        }
         if (valid.length < 14) {
-            return {
+            cachedTriggersKey = fp;
+            cachedTriggersRes = {
                 status: "INSUFFICIENT_DATA",
                 daysCollected: valid.length,
                 daysRequired: 14,
                 insights: []
             };
+            return cachedTriggersRes;
         }
 
         const candidates = [
@@ -160,7 +175,7 @@ const CNSAnalytics = (() => {
 
             const permY = [...yVec];
             let extremeCount = 0;
-            const M = 1000;
+            const M = 400;
             for (let m = 0; m < M; m++) {
                 for (let i = N - 1; i > 0; i--) {
                     const j = Math.floor(rng() * (i + 1));
@@ -191,10 +206,12 @@ const CNSAnalytics = (() => {
             .slice(0, maxPassIdx + 1)
             .filter(r => Math.abs(r.shiftMs) >= 10 && Math.abs(r.rhoShrunk) >= 0.20);
 
-        return { status: "OK", daysCollected: N, insights: verified };
+        cachedTriggersKey = fp;
+        cachedTriggersRes = { status: "OK", daysCollected: N, insights: verified };
+        return cachedTriggersRes;
     }
 
-    return { median, mad, discoverTriggers };
+    return { median, mad, buildDailyRecords, discoverTriggers };
 })();
 
 // --- Offline WebAudio 432Hz Gentle Chime (Zero MP3 assets) ---
@@ -211,6 +228,14 @@ function unlockAudioCtx() {
         return null;
     }
 }
+
+window.suspendAudioCtx = () => {
+    try {
+        if (tankAudioCtx && tankAudioCtx.state === "running") {
+            tankAudioCtx.suspend();
+        }
+    } catch (_) {}
+};
 
 function playGentleChime432() {
     try {
@@ -633,6 +658,14 @@ window.handlePvtPress = (event) => {
         const rawTs = event && typeof event.timeStamp === "number" ? event.timeStamp : 0;
         const pressPerf = (rawTs > 0 && Math.abs(nowPerf - rawTs) < 500) ? rawTs : nowPerf;
         const rt = Math.max(1, Math.round(pressPerf - pvtStartPerf));
+        if (rt < 100) {
+            pvtState = "idle";
+            window.haptic([60, 60]);
+            btn.innerText = "ФАЛЬСТАРТ (<100 мс)! Жми для повтора";
+            btn.className = "btn btn-danger";
+            prog.innerText = "Сброшено (упреждение < 100 мс)";
+            return;
+        }
         pvtTrials.push(rt);
         window.haptic(25);
 

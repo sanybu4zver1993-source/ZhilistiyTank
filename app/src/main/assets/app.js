@@ -116,6 +116,7 @@ function createDefaultState() {
     };
 }
 
+window.createDefaultState = createDefaultState;
 window.AppState = createDefaultState();
 
 window.VaultSession = {
@@ -135,33 +136,69 @@ window.assertVaultUnlocked = () => {
     return true;
 };
 
+function safePlainAssign(target, src) {
+    if (!src || typeof src !== "object" || Array.isArray(src)) return target;
+    for (const k of Object.keys(src)) {
+        if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+        target[k] = src[k];
+    }
+    return target;
+}
+
+function finiteOr(val, fallback) {
+    const n = Number(val);
+    return Number.isFinite(n) ? n : fallback;
+}
+
 window.mergeStateWithDefaults = (rawObj) => {
     const def = createDefaultState();
-    const merged = Object.assign({}, def, rawObj || {});
-    merged.food = Object.assign({}, def.food, merged.food || {});
-    merged.supps = Object.assign({}, def.supps, merged.supps || {});
-    merged.suppsInventory = Object.assign({}, def.suppsInventory, merged.suppsInventory || {});
+    const safeRaw = (rawObj && typeof rawObj === "object" && !Array.isArray(rawObj)) ? rawObj : {};
+    const merged = safePlainAssign(Object.assign({}, def), safeRaw);
+
+    const rawFood = safePlainAssign(Object.assign({}, def.food), merged.food);
+    merged.food = {
+        totalB: Math.max(0, finiteOr(rawFood.totalB, 0)),
+        totalF: Math.max(0, finiteOr(rawFood.totalF, 0)),
+        totalU: Math.max(0, finiteOr(rawFood.totalU, 0)),
+        totalKcal: Math.max(0, finiteOr(rawFood.totalKcal, 0))
+    };
+    merged.water = Math.max(0, finiteOr(merged.water, 0));
+    merged.bodyBattery = Math.max(5, Math.min(100, Math.round(finiteOr(merged.bodyBattery, 85))));
+    merged.foodEditErrors = Math.max(0, Math.round(finiteOr(merged.foodEditErrors, 0)));
+
+    merged.supps = safePlainAssign(Object.assign({}, def.supps), merged.supps);
+    merged.suppsInventory = safePlainAssign(Object.assign({}, def.suppsInventory), merged.suppsInventory);
 
     const mergedMeta = Object.assign({}, def.suppMeta);
-    if (rawObj && rawObj.suppMeta) {
-        for (const k in rawObj.suppMeta) {
-            mergedMeta[k] = Object.assign(
-                { id: k, label: k, lot: "", archived: false },
-                mergedMeta[k] || {},
-                rawObj.suppMeta[k]
+    if (safeRaw.suppMeta && typeof safeRaw.suppMeta === "object" && !Array.isArray(safeRaw.suppMeta)) {
+        for (const k of Object.keys(safeRaw.suppMeta)) {
+            if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+            mergedMeta[k] = safePlainAssign(
+                Object.assign({ id: k, label: k, lot: "", archived: false }, mergedMeta[k] || {}),
+                safeRaw.suppMeta[k]
             );
         }
     }
     merged.suppMeta = mergedMeta;
 
-    merged.dossier = Object.assign({}, def.dossier, merged.dossier || {});
+    merged.dossier = safePlainAssign(Object.assign({}, def.dossier), merged.dossier);
+    merged.dossier.waterNorm = Math.max(500, Math.round(finiteOr(merged.dossier.waterNorm, 3000)));
     if (merged.dossier.region === "Чернігівська область") merged.dossier.region = "Чернигов";
-    merged.apiKeys = Object.assign({}, def.apiKeys, merged.apiKeys || {});
+
+    merged.apiKeys = safePlainAssign(Object.assign({}, def.apiKeys), merged.apiKeys);
     if (!Array.isArray(merged.apiKeys.trainerModels)) merged.apiKeys.trainerModels = def.apiKeys.trainerModels;
     if (!Array.isArray(merged.apiKeys.visionModels)) merged.apiKeys.visionModels = def.apiKeys.visionModels;
-    merged.activePots = Object.assign({}, def.activePots, merged.activePots || {});
-    merged.potTare = Object.assign({}, def.potTare, merged.potTare || {});
-    merged.potRecipes = Object.assign({}, def.potRecipes, merged.potRecipes || {});
+
+    merged.activePots = safePlainAssign(Object.assign({}, def.activePots), merged.activePots);
+    const rawTare = safePlainAssign(Object.assign({}, def.potTare), merged.potTare);
+    merged.potTare = {
+        green: Math.max(0, finiteOr(rawTare.green, 0)),
+        white: Math.max(0, finiteOr(rawTare.white, 0))
+    };
+    merged.potRecipes = safePlainAssign(Object.assign({}, def.potRecipes), merged.potRecipes);
+    merged.customPotIngredients = safePlainAssign({}, merged.customPotIngredients);
+    merged.dailyHistory = safePlainAssign({}, merged.dailyHistory);
+
     if (!Array.isArray(merged.events)) merged.events = [];
     if (!Array.isArray(merged.sleepLogs)) merged.sleepLogs = [];
     if (!Array.isArray(merged.workoutDays)) merged.workoutDays = [];
@@ -230,6 +267,8 @@ window.onVaultSaveAck = (resStr) => {
         const res = JSON.parse(resStr);
         if (res.status === "LOCKED") {
             window.lockToStealth();
+        } else if (res.status === "ERROR") {
+            showToast("⚠️ Ошибка записи сейфа — проверь свободное место!");
         }
     } catch (_) {}
 };
@@ -239,7 +278,7 @@ window.saveUIState = () => {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
         window.flushVaultNow();
-    }, 400);
+    }, 900);
 };
 
 window.addEventListener("pagehide", () => {
@@ -266,11 +305,10 @@ window.checkDailyReset = () => {
 };
 
 window.hydrateAllUI = () => {
-    // 1. Drain native QuickSettings water events FIRST by exact event day
-    if (window.syncWaterFromNative) window.syncWaterFromNative();
-    // 2. Then run daily rollover so late-night tile events are never lost
+    // 1. Roll over previous day BEFORE draining QuickSettings tile events
     window.checkDailyReset();
-    if (window.syncWaterFromNative) window.syncWaterFromNative(true);
+    // 2. Drain queued QuickSettings water events (yesterday's go into dailyHistory, today's into AppState.water)
+    if (window.syncWaterFromNative) window.syncWaterFromNative();
 
     if (window.loadDossierUI) window.loadDossierUI();
     if (window.updateFoodUI) window.updateFoodUI();
@@ -297,15 +335,32 @@ window.hydrateAllUI = () => {
 };
 
 window.wipeRuntimeSensitiveDom = () => {
+    lastAirAlertActive = null;
     const fields = [
         "foodName", "foodB", "foodF", "foodU", "foodKcal", "smartFoodInput",
         "chatInput", "steganoPassInput", "tankBackupPassInput",
-        "oldCurrentPin", "newCurrentPin", "geminiTrainerKey", "geminiVisionKey", "alertsInUaToken"
+        "oldCurrentPin", "newCurrentPin", "geminiTrainerKey", "geminiVisionKey", "alertsInUaToken",
+        "customWaterInput", "qrInputText"
     ];
     fields.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = "";
     });
+
+    const clearHtmlIds = [
+        "chatHistory", "qrOutput", "hrvResult", "todayFoodList",
+        "suppsContainer", "quickSuppsList", "cnsInsightsList", "sosSubButtons",
+        "foodImageStatus", "pvtBaselineInfo", "airAlertDetail", "heatmapGrid"
+    ];
+    clearHtmlIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = "";
+    });
+
+    const qrOut = document.getElementById("qrOutput");
+    if (qrOut) qrOut.style.display = "none";
+    const hrvRes = document.getElementById("hrvResult");
+    if (hrvRes) hrvRes.style.display = "none";
 };
 
 window.activeModuleId = "dashboard";
@@ -408,6 +463,7 @@ window.getWaterNorm = () => (AppState.dossier && AppState.dossier.waterNorm) ? A
 
 window.addWater = (ml) => {
     if (!window.assertVaultUnlocked()) return;
+    window.checkDailyReset();
     window.haptic(30);
     AppState.water += ml;
     window.logEvent("water", { ml });
@@ -675,6 +731,18 @@ window.onAirAlertsLoaded = (wrapperStr) => {
         const wrapper = JSON.parse(wrapperStr);
         if (!wrapper.ok) throw new Error(wrapper.error || `HTTP ${wrapper.status}`);
         const data = JSON.parse(wrapper.body);
+        if (
+            data &&
+            typeof data === "object" &&
+            !Array.isArray(data) &&
+            data.error &&
+            !Array.isArray(data.alerts) &&
+            !Array.isArray(data.activeAlerts) &&
+            !data.states &&
+            !data.state
+        ) {
+            throw new Error(String(data.error));
+        }
         const city = getCityInfo();
 
         let isActive = false;
@@ -685,7 +753,7 @@ window.onAirAlertsLoaded = (wrapperStr) => {
         let sourceTag = wrapper.source || "";
 
         if (sourceTag === "alerts.in.ua" || Array.isArray(data.alerts)) {
-            // alerts.in.ua v1 format (city/raion/hromada precision)
+            // alerts.in.ua v1 format (city/raion/hromada/oblast precision)
             sourceTag = sourceTag || "alerts.in.ua";
             const matched = (data.alerts || []).filter(a => {
                 const title = String(a.location_title || "").toLowerCase();
@@ -693,9 +761,19 @@ window.onAirAlertsLoaded = (wrapperStr) => {
                 return (city.raionUid && uid === city.raionUid) ||
                     title.includes(city.matchKw);
             });
-            isActive = matched.length > 0;
-            scopeLabel = `г. ${city.cityName}`;
-            changed = formatAlertTimestamp(matched[0]?.started_at);
+            const localMatch = matched.find(a => String(a.location_type || "").toLowerCase() !== "oblast");
+            const chosen = localMatch || matched[0];
+            isActive = Boolean(chosen);
+            if (chosen) {
+                const locType = String(chosen.location_type || "").toLowerCase();
+                scopeLabel = locType === "oblast" ? `${city.cityName} (область)` : `г. ${city.cityName}`;
+                const alertType = String(chosen.alert_type || "");
+                if (alertType && alertType !== "air_raid") threatText = alertType;
+                changed = formatAlertTimestamp(chosen.started_at);
+            } else {
+                scopeLabel = `г. ${city.cityName}`;
+                changed = formatAlertTimestamp(null);
+            }
         } else if (sourceTag === "siren.pp.ua" || Array.isArray(data) || Array.isArray(data.activeAlerts)) {
             // siren.pp.ua / ukrainealarm v3 format (community / district / oblast precision)
             sourceTag = "siren.pp.ua";
@@ -785,8 +863,17 @@ window.onAirAlertsLoaded = (wrapperStr) => {
 
         if (isActive && lastAirAlertActive === false) {
             window.haptic([250, 100, 250]);
-            window.logEvent("stress", { trigger: "Воздушная тревога", region: scopeLabel });
-            if (window.calculateRecoveryScore) window.calculateRecoveryScore();
+            const nowMs = Date.now();
+            const recentSameAlert = (AppState.events || []).some(e =>
+                e.type === "stress" &&
+                e.payload?.trigger === "Воздушная тревога" &&
+                e.occurred_at &&
+                (nowMs - new Date(e.occurred_at).getTime()) < 30 * 60 * 1000
+            );
+            if (!recentSameAlert) {
+                window.logEvent("stress", { trigger: "Воздушная тревога", region: scopeLabel });
+                if (window.calculateRecoveryScore) window.calculateRecoveryScore();
+            }
             if (window.AndroidBridge && window.AndroidBridge.showNotification) {
                 window.AndroidBridge.showNotification("🚨 Воздушная тревога", `${scopeLabel}: перейди в укрытие`);
             }

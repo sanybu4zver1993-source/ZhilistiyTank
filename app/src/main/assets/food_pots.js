@@ -378,6 +378,11 @@ function bindPotEvents() {
         const sel = e.target.closest("[data-row-field='ingredientKey']");
         if (sel) {
             window.updatePotRow(safeParseInt(sel.dataset.rowId, -1), "ingredientKey", sel.value);
+            return;
+        }
+        const tareInp = e.target.closest("#potTareWeight");
+        if (tareInp) {
+            window.updatePotTare(currentPotType, tareInp.value);
         }
     });
 
@@ -385,11 +390,6 @@ function bindPotEvents() {
         const gInp = e.target.closest("[data-row-field='grams']");
         if (gInp) {
             window.updatePotRow(safeParseInt(gInp.dataset.rowId, -1), "grams", gInp.value);
-            return;
-        }
-        const tareInp = e.target.closest("#potTareWeight");
-        if (tareInp) {
-            window.updatePotTare(currentPotType, tareInp.value);
         }
     });
 }
@@ -626,6 +626,9 @@ window.calcPot = () => {
     let finalWeight = rawWeight;
     const netVal = parseFloat(document.getElementById("potNetWeight").value);
     if (!isNaN(netVal) && netVal > 0) finalWeight = netVal;
+    if (!Number.isFinite(finalWeight) || finalWeight < 10) {
+        return showToast("Вес готовой кастрюли должен быть не менее 10 г!");
+    }
 
     const mainIng = currentPotRows[0]?.ingredientKey || "Кастрюля";
     const name = `${currentPotType === "green" ? "Мясная" : "Молочная"} (${mainIng.charAt(0).toUpperCase() + mainIng.slice(1)})`;

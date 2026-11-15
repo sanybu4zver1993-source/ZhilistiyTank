@@ -65,6 +65,7 @@ import java.util.concurrent.Executors
 class MainActivity : ComponentActivity() {
 
     private var webViewRef: WebView? = null
+    private var bridgeRef: WebAppInterface? = null
     private lateinit var vaultManager: VaultManager
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -81,6 +82,9 @@ class MainActivity : ComponentActivity() {
 
     private val imageExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val fallbackRamClearRunnable = Runnable {
+        bridgeRef?.lockVaultSessionNow() ?: VaultManager.clearSessionInRam()
+    }
 
     fun launchExternalSystemFlow(ttlMs: Long = 90_000L, block: () -> Unit) {
         awaitingSystemResult = true
@@ -152,8 +156,8 @@ class MainActivity : ComponentActivity() {
                     } else {
                         JSONObject().put("ok", false).put("error", "Не удалось декодировать фото").toString()
                     }
-                } catch (e: Exception) {
-                    JSONObject().put("ok", false).put("error", e.message ?: "Ошибка сжатия фото").toString()
+                } catch (t: Throwable) {
+                    JSONObject().put("ok", false).put("error", t.message ?: "Ошибка сжатия фото").toString()
                 }
                 invokeJsCallback(cbName, res)
             }
@@ -224,10 +228,14 @@ class MainActivity : ComponentActivity() {
                                 allowContentAccess = false
                             }
 
-                            addJavascriptInterface(
-                                WebAppInterface(this@MainActivity, this, vaultManager),
-                                "AndroidBridge"
-                            )
+                            VaultManager.webViewWipeHook = {
+                                webViewRef?.clearCache(true)
+                                webViewRef?.clearFormData()
+                            }
+
+                            val bridge = WebAppInterface(this@MainActivity, this, vaultManager)
+                            bridgeRef = bridge
+                            addJavascriptInterface(bridge, "AndroidBridge")
 
                             webViewClient = object : WebViewClient() {
                                 override fun shouldInterceptRequest(
@@ -358,24 +366,27 @@ class MainActivity : ComponentActivity() {
 
         if (!isPickerGraceActive) {
             clearExternalFlowGrace()
-            VaultManager.clearSessionInRam()
             webViewRef?.evaluateJavascript(
                 "window.onAppBackgrounded && window.onAppBackgrounded();",
                 null
             )
+            // Safety fallback guarantees RAM zeroization even if WebView fails to call lockVaultSessionNow()
+            mainHandler.removeCallbacks(fallbackRamClearRunnable)
+            mainHandler.postDelayed(fallbackRamClearRunnable, 350L)
         }
     }
 
     override fun onResume() {
         super.onResume()
+        mainHandler.removeCallbacks(fallbackRamClearRunnable)
         val now = SystemClock.elapsedRealtime()
         if (awaitingSystemResult && now >= systemResultDeadlineMs) {
             clearExternalFlowGrace()
-            VaultManager.clearSessionInRam()
             webViewRef?.evaluateJavascript(
                 "window.onAppBackgrounded && window.onAppBackgrounded();",
                 null
             )
+            mainHandler.postDelayed(fallbackRamClearRunnable, 350L)
             return
         }
         if (awaitingSystemResult) {
@@ -388,7 +399,18 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
+        WaterSyncBus.activeListener = null
+        VaultManager.webViewWipeHook = null
+        VaultManager.clearSessionInRam()
+        webViewRef?.apply {
+            stopLoading()
+            destroy()
+        }
         webViewRef = null
+        bridgeRef?.shutdown()
+        bridgeRef = null
+        imageExecutor.shutdownNow()
         super.onDestroy()
     }
 }
@@ -432,7 +454,19 @@ class WebAppInterface(
 
     @JavascriptInterface
     fun lockVaultSessionNow() {
-        VaultManager.clearSessionInRam()
+        try {
+            cryptoExecutor.execute {
+                VaultManager.clearSessionInRam()
+            }
+        } catch (_: Exception) {
+            VaultManager.clearSessionInRam()
+        }
+    }
+
+    fun shutdown() {
+        mainHandler.removeCallbacksAndMessages(null)
+        cryptoExecutor.shutdown()
+        networkExecutor.shutdownNow()
     }
 
     @JavascriptInterface
@@ -525,32 +559,42 @@ class WebAppInterface(
             val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                 data = Uri.parse("package:${context.packageName}")
             }
-            activity.launchExternalSystemFlow {
+            try {
                 activity.startActivity(intent)
+            } catch (_: Exception) {
             }
+        }
+    }
+
+    @JavascriptInterface
+    fun isIgnoringBatteryOptimizations(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.isIgnoringBatteryOptimizations(context.packageName)
+        } else {
+            true
         }
     }
 
     @JavascriptInterface
     fun openBatteryOptimizationSettings() {
         val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:${context.packageName}")
-            }
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         } else {
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = Uri.parse("package:${context.packageName}")
             }
         }
-        activity.launchExternalSystemFlow {
+        try {
+            activity.startActivity(intent)
+        } catch (_: Exception) {
             try {
-                activity.startActivity(intent)
-            } catch (_: Exception) {
                 activity.startActivity(
                     Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                         data = Uri.parse("package:${context.packageName}")
                     }
                 )
+            } catch (_: Exception) {
             }
         }
     }
@@ -563,15 +607,16 @@ class WebAppInterface(
                 "com.miui.permcenter.autostart.AutoStartManagementActivity"
             )
         }
-        activity.launchExternalSystemFlow {
+        try {
+            activity.startActivity(miuiIntent)
+        } catch (_: Exception) {
             try {
-                activity.startActivity(miuiIntent)
-            } catch (_: Exception) {
                 activity.startActivity(
                     Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                         data = Uri.parse("package:${context.packageName}")
                     }
                 )
+            } catch (_: Exception) {
             }
         }
     }
@@ -781,7 +826,7 @@ class WebAppInterface(
     @JavascriptInterface
     fun fetchAirAlertsAsync(alertsInUaToken: String, callbackName: String) {
         networkExecutor.execute {
-            val result = AirAlertHelper.fetchAlertsWithFallback(alertsInUaToken)
+            val result = AirAlertHelper.fetchAlertsWithFallback(alertsInUaToken, context)
             invokeJsCallback(callbackName, result)
         }
     }

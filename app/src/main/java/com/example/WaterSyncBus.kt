@@ -23,10 +23,21 @@ object WaterSyncBus {
     private const val KEY_WATER_REMINDER_ENABLED = "water_reminder_enabled"
     private const val KEY_NEXT_WATER_ALARM_TS = "next_water_alarm_ts"
 
+    private const val MAX_QUEUE_EVENTS = 100
+
     @Volatile
     var activeListener: (() -> Unit)? = null
 
     private fun todayKey(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
+    @Synchronized
+    fun clearAll(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+        try {
+            TileService.requestListeningState(ctx, ComponentName(ctx, WaterTileService::class.java))
+        } catch (_: Exception) {
+        }
+    }
 
     @Synchronized
     fun getDisplayTotalMl(ctx: Context): Int {
@@ -40,31 +51,50 @@ object WaterSyncBus {
         }
     }
 
-    @Synchronized
     fun enqueueFromTile(ctx: Context, deltaMl: Int): Int {
-        val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val today = todayKey()
-        val base = getDisplayTotalMl(ctx)
-        val updatedTotal = (base + deltaMl).coerceAtLeast(0)
+        val updatedTotal: Int
+        val listenerSnapshot: (() -> Unit)?
+        synchronized(this) {
+            val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val today = todayKey()
+            val base = getDisplayTotalMl(ctx)
+            updatedTotal = (base + deltaMl).coerceAtLeast(0)
 
-        val arr = JSONArray(sp.getString(KEY_QUEUE, "[]"))
-        val evt = JSONObject().apply {
-            put("id", UUID.randomUUID().toString())
-            put("ts", System.currentTimeMillis())
-            put("day", today)
-            put("deltaMl", deltaMl)
-            put("source", "qs_tile")
+            val arr = try {
+                JSONArray(sp.getString(KEY_QUEUE, "[]"))
+            } catch (_: Exception) {
+                JSONArray()
+            }
+            val evt = JSONObject().apply {
+                put("id", UUID.randomUUID().toString())
+                put("ts", System.currentTimeMillis())
+                put("day", today)
+                put("deltaMl", deltaMl)
+                put("source", "qs_tile")
+            }
+            arr.put(evt)
+
+            val bounded = if (arr.length() > MAX_QUEUE_EVENTS) {
+                JSONArray().apply {
+                    for (i in (arr.length() - MAX_QUEUE_EVENTS) until arr.length()) {
+                        put(arr.get(i))
+                    }
+                }
+            } else {
+                arr
+            }
+
+            sp.edit()
+                .putString(KEY_QUEUE, bounded.toString())
+                .putString(KEY_CACHE_DAY, today)
+                .putInt(KEY_CACHE_ML, updatedTotal)
+                .commit()
+
+            listenerSnapshot = activeListener
         }
-        arr.put(evt)
-
-        sp.edit()
-            .putString(KEY_QUEUE, arr.toString())
-            .putString(KEY_CACHE_DAY, today)
-            .putInt(KEY_CACHE_ML, updatedTotal)
-            .apply()
 
         scheduleWaterReminderWithQuietHours(ctx, 2 * 3600L)
-        activeListener?.invoke()
+        listenerSnapshot?.invoke()
         return updatedTotal
     }
 
@@ -78,23 +108,23 @@ object WaterSyncBus {
     fun ackEventsAndSyncDisplay(ctx: Context, ackIdsJson: String, authoritativeTodayMl: Int) {
         val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val ackSet = mutableSetOf<String>()
-        val ackArr = JSONArray(ackIdsJson)
+        val ackArr = try { JSONArray(ackIdsJson) } catch (_: Exception) { JSONArray() }
         for (i in 0 until ackArr.length()) {
             ackSet.add(ackArr.getString(i))
         }
 
-        val currentArr = JSONArray(sp.getString(KEY_QUEUE, "[]"))
+        val currentArr = try { JSONArray(sp.getString(KEY_QUEUE, "[]")) } catch (_: Exception) { JSONArray() }
         val remaining = JSONArray()
         for (i in 0 until currentArr.length()) {
-            val item = currentArr.getJSONObject(i)
-            if (item.getString("id") !in ackSet) remaining.put(item)
+            val item = currentArr.optJSONObject(i) ?: continue
+            if (item.optString("id") !in ackSet) remaining.put(item)
         }
 
         sp.edit()
             .putString(KEY_QUEUE, remaining.toString())
             .putString(KEY_CACHE_DAY, todayKey())
             .putInt(KEY_CACHE_ML, authoritativeTodayMl.coerceAtLeast(0))
-            .apply()
+            .commit()
 
         try {
             TileService.requestListeningState(ctx, ComponentName(ctx, WaterTileService::class.java))
