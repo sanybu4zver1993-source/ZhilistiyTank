@@ -291,16 +291,36 @@ window.onVoiceFoodResult = (resStr) => {
     } catch (_) {}
 };
 
-// --- Native Compressed Food Photo Picker (1024px RGB_565 JPEG 80%) ---
-window.pickFoodPhoto = () => {
-    if (!window.assertVaultUnlocked()) return;
+// --- Native Compressed Food Photo Picker & Camera Capture (1024px RGB_565 JPEG 80%) ---
+function ensureVisionKeyReadyOrWarn() {
+    if (window.syncApiKeysFromInputs) window.syncApiKeysFromInputs(false);
     const keys = AppState.apiKeys || {};
     if (!keys.visionKey && !keys.trainerKey) {
-        return showToast("Укажи Gemini Vision Key в ⚙️ Настройки!");
+        showToast("🔑 Сначала вставь Gemini API ключ в ⚙️ Настройки!");
+        return false;
     }
+    return true;
+}
+
+window.takeFoodCameraPhoto = () => {
+    if (!window.assertVaultUnlocked()) return;
+    if (!ensureVisionKeyReadyOrWarn()) return;
+    if (window.AndroidBridge && window.AndroidBridge.takeFoodPhotoAsync) {
+        const statusEl = document.getElementById("photoStatusBox") || document.getElementById("foodImageStatus");
+        if (statusEl) statusEl.innerHTML = "<span class='text-muted'>📸 Открываю камеру...</span>";
+        window.AndroidBridge.takeFoodPhotoAsync("onFoodPhotoPicked");
+    } else {
+        const inp = document.getElementById("foodVisionInput");
+        if (inp) inp.click();
+    }
+};
+
+window.pickFoodPhoto = () => {
+    if (!window.assertVaultUnlocked()) return;
+    if (!ensureVisionKeyReadyOrWarn()) return;
     if (window.AndroidBridge && window.AndroidBridge.pickAndCompressFoodPhotoAsync) {
-        const statusEl = document.getElementById("foodImageStatus");
-        if (statusEl) statusEl.innerHTML = "<span class='text-muted'>📷 Выбор и сжатие фото...</span>";
+        const statusEl = document.getElementById("photoStatusBox") || document.getElementById("foodImageStatus");
+        if (statusEl) statusEl.innerHTML = "<span class='text-muted'>🖼 Выбор и сжатие фото...</span>";
         window.AndroidBridge.pickAndCompressFoodPhotoAsync("onFoodPhotoPicked");
     } else {
         const inp = document.getElementById("foodVisionInput");
@@ -309,22 +329,28 @@ window.pickFoodPhoto = () => {
 };
 
 window.onFoodPhotoPicked = (resStr) => {
-    const statusEl = document.getElementById("foodImageStatus");
+    const statusBox = document.getElementById("photoStatusBox");
+    const nutritionStatus = document.getElementById("foodImageStatus");
+    const setStat = (html) => {
+        if (statusBox) statusBox.innerHTML = html;
+        if (nutritionStatus) nutritionStatus.innerHTML = html;
+    };
+
     try {
         const res = JSON.parse(resStr);
         if (res.cancelled) {
-            if (statusEl) statusEl.innerText = "";
+            setStat("");
             return;
         }
         if (!res.ok || !res.base64) {
-            if (statusEl) statusEl.innerText = "❌ " + (res.error || "Ошибка фото");
+            setStat(`<span class="text-danger">❌ ${escapeHtml(res.error || "Ошибка фото")}</span>`);
             return;
         }
         if (window.analyzeFoodImageBase64) {
             window.analyzeFoodImageBase64(res.base64, res.mimeType || "image/jpeg");
         }
     } catch (_) {
-        if (statusEl) statusEl.innerText = "❌ Ошибка обработки фото";
+        setStat(`<span class="text-danger">❌ Ошибка обработки фото</span>`);
     }
 };
 
@@ -332,10 +358,7 @@ window.analyzeFoodImageFallback = (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    const keys = AppState.apiKeys || {};
-    if (!keys.visionKey && !keys.trainerKey) {
-        return showToast("Укажи Gemini Vision Key в ⚙️ Настройки!");
-    }
+    if (!ensureVisionKeyReadyOrWarn()) return;
     const reader = new FileReader();
     reader.onload = (e) => {
         const dataUrl = String(e.target.result || "");

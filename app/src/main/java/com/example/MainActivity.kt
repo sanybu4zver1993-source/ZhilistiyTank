@@ -26,8 +26,10 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.util.Base64
+import android.util.Log
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
@@ -42,6 +44,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
@@ -52,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.webkit.WebViewAssetLoader
 import com.example.ui.theme.MyApplicationTheme
 import org.json.JSONArray
@@ -72,13 +76,15 @@ class MainActivity : ComponentActivity() {
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingPhotoCallbackName: String? = null
+    private var pendingCameraFile: File? = null
     private var pendingVoiceCallbackName: String? = null
 
     private var awaitingSystemResult = false
     private var systemResultDeadlineMs = 0L
 
     private lateinit var filePickerLauncher: ActivityResultLauncher<String>
-    private lateinit var foodPhotoPickerLauncher: ActivityResultLauncher<String>
+    private lateinit var foodPhotoPickerLauncher: ActivityResultLauncher<PickVisualMediaRequest>
+    private lateinit var foodCameraLauncher: ActivityResultLauncher<Uri>
     private lateinit var voiceFoodLauncher: ActivityResultLauncher<Intent>
     private lateinit var notifPermissionLauncher: ActivityResultLauncher<String>
 
@@ -93,9 +99,10 @@ class MainActivity : ComponentActivity() {
         systemResultDeadlineMs = SystemClock.elapsedRealtime() + ttlMs
         try {
             block()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             awaitingSystemResult = false
             systemResultDeadlineMs = 0L
+            throw e
         }
     }
 
@@ -134,7 +141,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        foodPhotoPickerLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        foodPhotoPickerLauncher = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
             clearExternalFlowGrace()
             val cbName = pendingPhotoCallbackName
             pendingPhotoCallbackName = null
@@ -155,6 +162,40 @@ class MainActivity : ComponentActivity() {
                     }
                 } catch (t: Throwable) {
                     JSONObject().put("ok", false).put("error", t.message ?: "Ошибка сжатия фото").toString()
+                }
+                invokeJsCallback(cbName, res)
+            }
+        }
+
+        foodCameraLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+            clearExternalFlowGrace()
+            val cbName = pendingPhotoCallbackName
+            val tempFile = pendingCameraFile
+            pendingPhotoCallbackName = null
+            pendingCameraFile = null
+            if (cbName == null) {
+                tempFile?.delete()
+                return@registerForActivityResult
+            }
+
+            if (!success || tempFile == null || !tempFile.exists() || tempFile.length() == 0L) {
+                tempFile?.delete()
+                invokeJsCallback(cbName, JSONObject().put("ok", false).put("cancelled", true).toString())
+                return@registerForActivityResult
+            }
+
+            imageExecutor.execute {
+                val res = try {
+                    val b64 = decodeAndCompressUriToBase64(applicationContext, Uri.fromFile(tempFile), 1024)
+                    if (b64 != null) {
+                        JSONObject().put("ok", true).put("base64", b64).put("mimeType", "image/jpeg").toString()
+                    } else {
+                        JSONObject().put("ok", false).put("error", "Не удалось декодировать снимок").toString()
+                    }
+                } catch (t: Throwable) {
+                    JSONObject().put("ok", false).put("error", t.message ?: "Ошибка сжатия снимка").toString()
+                } finally {
+                    tempFile.delete()
                 }
                 invokeJsCallback(cbName, res)
             }
@@ -184,8 +225,11 @@ class MainActivity : ComponentActivity() {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
             ) {
-                launchExternalSystemFlow {
-                    notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                try {
+                    launchExternalSystemFlow {
+                        notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                } catch (_: Exception) {
                 }
             }
         }
@@ -264,6 +308,16 @@ class MainActivity : ComponentActivity() {
                             }
 
                             webChromeClient = object : WebChromeClient() {
+                                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                                    if (consoleMessage != null) {
+                                        val lvl = consoleMessage.messageLevel()
+                                        if (lvl == ConsoleMessage.MessageLevel.ERROR || lvl == ConsoleMessage.MessageLevel.WARNING) {
+                                            Log.w("VeinyTankWV", "[${lvl.name}] ${consoleMessage.message()} (${consoleMessage.sourceId()}:${consoleMessage.lineNumber()})")
+                                        }
+                                    }
+                                    return super.onConsoleMessage(consoleMessage)
+                                }
+
                                 override fun onShowFileChooser(
                                     webView: WebView?,
                                     filePathCallback: ValueCallback<Array<Uri>>?,
@@ -303,8 +357,36 @@ class MainActivity : ComponentActivity() {
     fun launchFoodPhotoPicker(callbackName: String) {
         mainHandler.post {
             pendingPhotoCallbackName = callbackName
-            launchExternalSystemFlow {
-                foodPhotoPickerLauncher.launch("image/*")
+            try {
+                launchExternalSystemFlow(ttlMs = 120_000L) {
+                    foodPhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }
+            } catch (e: Exception) {
+                pendingPhotoCallbackName = null
+                invokeJsCallback(callbackName, JSONObject().put("ok", false).put("error", e.message ?: "Галерея недоступна").toString())
+            }
+        }
+    }
+
+    fun launchFoodCameraCapture(callbackName: String) {
+        mainHandler.post {
+            var tempFile: File? = null
+            try {
+                val dir = File(cacheDir, "camera_temp").apply { mkdirs() }
+                tempFile = File(dir, "food_capture_${System.currentTimeMillis()}.jpg")
+                val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", tempFile)
+                pendingCameraFile?.delete()
+                pendingCameraFile = tempFile
+                pendingPhotoCallbackName = callbackName
+                launchExternalSystemFlow(ttlMs = 120_000L) {
+                    foodCameraLauncher.launch(uri)
+                }
+            } catch (e: Exception) {
+                tempFile?.delete()
+                pendingCameraFile = null
+                pendingPhotoCallbackName = null
+                Log.e("VeinyTankAI", "Camera launch failed: ${e.message}")
+                invokeJsCallback(callbackName, JSONObject().put("ok", false).put("error", "Камера недоступна: ${e.message}").toString())
             }
         }
     }
@@ -317,8 +399,13 @@ class MainActivity : ComponentActivity() {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
                 putExtra(RecognizerIntent.EXTRA_PROMPT, "Назови еду и вес...")
             }
-            launchExternalSystemFlow {
-                voiceFoodLauncher.launch(intent)
+            try {
+                launchExternalSystemFlow {
+                    voiceFoodLauncher.launch(intent)
+                }
+            } catch (e: Exception) {
+                pendingVoiceCallbackName = null
+                invokeJsCallback(callbackName, JSONObject().put("ok", false).put("error", e.message ?: "Голос недоступен").toString())
             }
         }
     }
@@ -664,6 +751,11 @@ class WebAppInterface(
     }
 
     @JavascriptInterface
+    fun takeFoodPhotoAsync(callbackName: String) {
+        activity.launchFoodCameraCapture(callbackName)
+    }
+
+    @JavascriptInterface
     fun canUseVoiceInput(): Boolean {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
         return context.packageManager.queryIntentActivities(intent, 0).isNotEmpty()
@@ -706,7 +798,27 @@ class WebAppInterface(
         }
     }
 
-    // --- Native Gemini Proxy (x-goog-api-key header + AQ. Express fallback) ---
+    // --- Native Gemini Proxy (x-goog-api-key header + AQ. Express routing + LogFox safe diagnostics) ---
+    private fun keyPrefixTag(key: String): String {
+        val prefix = when {
+            key.startsWith("AIza") -> "AIza"
+            key.startsWith("AQ.") -> "AQ"
+            else -> "custom"
+        }
+        return "$prefix(len=${key.length})"
+    }
+
+    private fun extractGeminiErrorMsg(rawBody: String): String {
+        if (rawBody.isBlank()) return ""
+        return try {
+            val obj = JSONObject(rawBody)
+            obj.optJSONObject("error")?.optString("message", "")?.takeIf { it.isNotBlank() }
+                ?: obj.optString("message", "")
+        } catch (_: Exception) {
+            rawBody.take(200)
+        }
+    }
+
     @JavascriptInterface
     fun fetchGeminiModelsAsync(apiKey: String, callbackName: String) {
         networkExecutor.execute {
@@ -726,17 +838,22 @@ class WebAppInterface(
                 )
             )
 
+            var apiErrorNote = ""
+            var conn: HttpURLConnection? = null
             try {
-                val conn = (URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100").openConnection() as HttpURLConnection).apply {
+                Log.d("VeinyTankAI", "fetchGeminiModels key=${keyPrefixTag(cleanKey)}")
+                conn = (URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100").openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 15_000
-                    readTimeout = 20_000
+                    connectTimeout = 20_000
+                    readTimeout = 25_000
                     setRequestProperty("Accept", "application/json")
                     setRequestProperty("x-goog-api-key", cleanKey)
                 }
                 val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                Log.d("VeinyTankAI", "fetchGeminiModels status=$code bodyLen=${body.length}")
                 if (code in 200..299) {
-                    val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                     val json = JSONObject(body)
                     val arr = json.optJSONArray("models") ?: JSONArray()
                     val filtered = JSONArray()
@@ -763,15 +880,24 @@ class WebAppInterface(
                         )
                         return@execute
                     }
+                    apiErrorNote = "API вернул 0 подходящих моделей"
+                } else {
+                    val errDetail = extractGeminiErrorMsg(body)
+                    apiErrorNote = "HTTP $code${if (errDetail.isNotBlank()) ": $errDetail" else ""}"
+                    Log.w("VeinyTankAI", "fetchGeminiModels rejected: $apiErrorNote")
                 }
-            } catch (_: Exception) {
+            } catch (t: Throwable) {
+                apiErrorNote = "${t.javaClass.simpleName}: ${t.message ?: "network error"}"
+                Log.e("VeinyTankAI", "fetchGeminiModels exception: $apiErrorNote")
+            } finally {
+                conn?.disconnect()
             }
 
             // Express AQ. keys often cannot query models.list; provide curated fallback list cleanly
             val msg = if (cleanKey.startsWith("AQ.")) {
                 "Express-ключ (AQ.): загружен базовый список моделей"
             } else {
-                "Не удалось получить список с API — показан базовый набор"
+                "Не удалось получить список с API ($apiErrorNote) — показан базовый набор"
             }
             invokeJsCallback(
                 callbackName,
@@ -783,42 +909,61 @@ class WebAppInterface(
     @JavascriptInterface
     fun callGeminiAsync(apiKey: String, modelId: String, payloadJson: String, callbackName: String) {
         networkExecutor.execute {
-            val cleanKey = apiKey.trim()
-            val cleanModel = modelId.trim().removePrefix("models/")
-            if (cleanKey.isEmpty() || cleanModel.isEmpty()) {
-                invokeJsCallback(
-                    callbackName,
-                    JSONObject().put("ok", false).put("status", 0).put("error", "Не указан ключ или модель").toString()
-                )
-                return@execute
-            }
+            val resultJson = try {
+                val cleanKey = apiKey.trim()
+                val cleanModel = modelId.trim().removePrefix("models/")
+                if (cleanKey.isEmpty() || cleanModel.isEmpty()) {
+                    JSONObject().put("ok", false).put("status", 0).put("error", "Не указан ключ или модель")
+                } else {
+                    val encodedModel = URLEncoder.encode(cleanModel, "UTF-8").replace("+", "%20")
+                    val isExpressKey = cleanKey.startsWith("AQ.")
+                    val aiStudioUrl = "https://generativelanguage.googleapis.com/v1beta/models/$encodedModel:generateContent"
+                    val expressUrl = "https://aiplatform.googleapis.com/v1/publishers/google/models/$encodedModel:generateContent?key=" +
+                        URLEncoder.encode(cleanKey, "UTF-8")
 
-            val encodedModel = URLEncoder.encode(cleanModel, "UTF-8").replace("+", "%20")
-            val primaryUrl = "https://generativelanguage.googleapis.com/v1beta/models/$encodedModel:generateContent"
-            var result = postGeminiJson(primaryUrl, cleanKey, payloadJson, useQueryKey = false)
+                    val startedAt = SystemClock.elapsedRealtime()
+                    Log.d("VeinyTankAI", "callGemini start model=$cleanModel key=${keyPrefixTag(cleanKey)} payloadLen=${payloadJson.length}")
 
-            // Fallback to Vertex Express endpoint for AQ. keys if AI Studio endpoint rejects
-            val status = result.optInt("status", 0)
-            if (!result.optBoolean("ok", false) && cleanKey.startsWith("AQ.") && (status == 400 || status == 401 || status == 403 || status == 404)) {
-                val expressUrl = "https://aiplatform.googleapis.com/v1/publishers/google/models/$encodedModel:generateContent?key=" +
-                    URLEncoder.encode(cleanKey, "UTF-8")
-                val expressResult = postGeminiJson(expressUrl, cleanKey, payloadJson, useQueryKey = true)
-                if (expressResult.optBoolean("ok", false)) {
-                    result = expressResult
+                    var result = if (isExpressKey) {
+                        postGeminiJson(expressUrl, cleanKey, payloadJson, useQueryKey = true, hostLabel = "aiplatform")
+                    } else {
+                        postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage")
+                    }
+
+                    val status = result.optInt("status", 0)
+                    if (!result.optBoolean("ok", false) && isExpressKey && (status == 400 || status == 401 || status == 403 || status == 404)) {
+                        val altResult = postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage-fallback")
+                        if (altResult.optBoolean("ok", false)) {
+                            result = altResult
+                        }
+                    }
+
+                    val elapsed = SystemClock.elapsedRealtime() - startedAt
+                    Log.d("VeinyTankAI", "callGemini done model=$cleanModel ok=${result.optBoolean("ok")} status=${result.optInt("status")} elapsed=${elapsed}ms")
+                    result
                 }
+            } catch (t: Throwable) {
+                Log.e("VeinyTankAI", "callGemini fatal: ${t.javaClass.simpleName}: ${t.message}")
+                JSONObject().put("ok", false).put("status", 0).put("error", "${t.javaClass.simpleName}: ${t.message ?: "Unknown error"}")
             }
-
-            invokeJsCallback(callbackName, result.toString())
+            invokeJsCallback(callbackName, resultJson.toString())
         }
     }
 
-    private fun postGeminiJson(urlString: String, apiKey: String, payloadJson: String, useQueryKey: Boolean): JSONObject {
+    private fun postGeminiJson(
+        urlString: String,
+        apiKey: String,
+        payloadJson: String,
+        useQueryKey: Boolean,
+        hostLabel: String
+    ): JSONObject {
+        var conn: HttpURLConnection? = null
         return try {
-            val conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+            conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 doOutput = true
-                connectTimeout = 15_000
-                readTimeout = 45_000
+                connectTimeout = 20_000
+                readTimeout = 60_000
                 setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                 setRequestProperty("Accept", "application/json")
                 if (!useQueryKey) {
@@ -832,10 +977,20 @@ class WebAppInterface(
             if (code in 200..299) {
                 JSONObject().put("ok", true).put("status", code).put("body", body)
             } else {
-                JSONObject().put("ok", false).put("status", code).put("body", body)
+                val errMsg = extractGeminiErrorMsg(body)
+                Log.w("VeinyTankAI", "HTTP $code from $hostLabel: ${errMsg.take(260)}")
+                JSONObject()
+                    .put("ok", false)
+                    .put("status", code)
+                    .put("body", body)
+                    .put("error", errMsg.ifBlank { "HTTP $code ($hostLabel)" })
             }
-        } catch (e: Exception) {
-            JSONObject().put("ok", false).put("status", 0).put("error", e.message ?: "Network error")
+        } catch (t: Throwable) {
+            val msg = "${t.javaClass.simpleName}: ${t.message ?: "Network error"}"
+            Log.e("VeinyTankAI", "Exception on $hostLabel: $msg")
+            JSONObject().put("ok", false).put("status", 0).put("error", msg)
+        } finally {
+            conn?.disconnect()
         }
     }
 
@@ -856,8 +1011,9 @@ class WebAppInterface(
 
     private fun fetchHttpGetAsync(urlString: String, bearerToken: String?, callbackName: String) {
         networkExecutor.execute {
+            var conn: HttpURLConnection? = null
             val result = try {
-                val conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     connectTimeout = 10_000
                     readTimeout = 12_000
@@ -876,6 +1032,8 @@ class WebAppInterface(
                 }
             } catch (e: Exception) {
                 JSONObject().put("ok", false).put("error", e.message ?: "Network error").toString()
+            } finally {
+                conn?.disconnect()
             }
             invokeJsCallback(callbackName, result)
         }

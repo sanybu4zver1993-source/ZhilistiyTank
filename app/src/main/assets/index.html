@@ -134,6 +134,7 @@
                 <button class="nav-btn active-nav" data-mod="dashboard" onclick="showModule('dashboard')">🎛 Главная</button>
                 <button class="nav-btn" data-mod="dossier" onclick="showModule('dossier')">🗃 Досье</button>
                 <button class="nav-btn" data-mod="nutrition" onclick="showModule('nutrition')">🍗 БЖУ</button>
+                <button class="nav-btn" data-mod="photographer" onclick="showModule('photographer')">📷 Фотограф</button>
                 <button class="nav-btn" data-mod="water" onclick="showModule('water')">💧 Вода</button>
                 <button class="nav-btn" data-mod="sleep" onclick="showModule('sleep')">🛌 Сон & ЦНС</button>
                 <button class="nav-btn" data-mod="workout" onclick="showModule('workout')">🏋️ Тренировки</button>
@@ -142,7 +143,7 @@
                 <button class="nav-btn" data-mod="chat" onclick="showModule('chat')">💬 Тренер</button>
                 <button class="nav-btn" data-mod="stegano" onclick="showModule('stegano')">🖼 Стего & QR</button>
                 <button class="nav-btn" data-mod="settings" onclick="showModule('settings')">⚙️ Настройки</button>
-                <button class="nav-btn bg-danger" data-mod="sos" onclick="showModule('sos')">🆘 SOS</button>
+                <button class="nav-btn bg-danger nav-span-full" data-mod="sos" onclick="showModule('sos')">🆘 SOS Протоколы (Паника / Срыв / Отхода)</button>
             </nav>
 
             <div id="modulesContainer">
@@ -255,7 +256,7 @@
                         <div class="flex gap-2">
                             <textarea id="smartFoodInput" rows="2" placeholder="Напр: 200г гречки, 3 яйца, 30г медовой смеси" style="flex:1" oninput="autoParseFood()"></textarea>
                             <button class="btn btn-primary" style="width:auto; padding:0 14px;" id="btnVoiceFood" onclick="startVoiceFood()">🎤</button>
-                            <button class="btn btn-success" style="width:auto; padding:0 14px;" onclick="pickFoodPhoto()">📷</button>
+                            <button class="btn btn-success" style="width:auto; padding:0 14px;" title="Открыть ИИ-Фотографа" onclick="showModule('photographer')">📷</button>
                             <input type="file" id="foodVisionInput" accept="image/*" style="display:none" onchange="analyzeFoodImageFallback(event)">
                         </div>
 
@@ -301,6 +302,68 @@
                             <div class="p-2 card"><div class="text-xs text-muted">Углеводы</div><div id="uCount" class="font-bold">0г</div></div>
                         </div>
                         <div id="todayFoodList" class="flex-col gap-1 mt-2 text-left text-xs text-muted"></div>
+                    </div>
+                </div>
+
+                <!-- 3.5. ИИ-ФОТОГРАФ ЕДЫ -->
+                <div id="module-photographer" class="module">
+                    <div class="flex justify-between align-center mb-2 gap-2">
+                        <h2 style="margin:0;">📷 ИИ-Фотограф</h2>
+                        <span id="visionModelBadge" class="badge-pill">Модель не выбрана</span>
+                    </div>
+
+                    <div id="visionKeyStatusHint" class="text-xs text-warning mb-2" style="display:none;"></div>
+
+                    <div class="card flex-col gap-2 mb-2">
+                        <p class="text-xs text-muted">
+                            Сфоткай тарелку или выбери фото из галереи. ИИ честно оценит граммовку, белки, жиры, углеводы и скажет прямо, если где-то скрытый жир или непонятная каша.
+                        </p>
+
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-primary" id="btnCameraFood" onclick="takeFoodCameraPhoto()">📸 Сфоткать</button>
+                            <button class="btn btn-success" id="btnGalleryFood" onclick="pickFoodPhoto()">🖼 Из галереи</button>
+                        </div>
+
+                        <div class="input-group">
+                            <label>Подсказка для фотографа (опционально)</label>
+                            <input type="text" id="photoContextInput" placeholder="Напр: тарелка 24см, жарил на масле, под кашей свинина">
+                        </div>
+
+                        <div id="photoPreviewWrap" class="flex-col gap-2" style="display:none;">
+                            <img id="photoPreviewImg" class="photo-preview-img" alt="Предпросмотр блюда">
+                            <button class="btn btn-outline btn-sm" onclick="reanalyzeLastFoodPhoto()">🔁 Переанализировать с подсказкой</button>
+                        </div>
+
+                        <div id="photoStatusBox" class="text-sm font-bold"></div>
+                    </div>
+
+                    <div id="photoResultCard" class="card flex-col gap-2" style="display:none;">
+                        <div class="flex justify-between align-center gap-2">
+                            <h3 id="photoFoodTitle" style="margin:0;">Распознанное блюдо</h3>
+                            <span id="photoConfidenceBadge" class="badge-pill">—</span>
+                        </div>
+                        <p id="photoWeightRange" class="text-sm text-primary font-bold"></p>
+
+                        <div id="photoAiComment" class="ai-comment-box text-sm"></div>
+
+                        <div id="photoUncertainBox" class="uncertain-box text-xs" style="display:none;"></div>
+
+                        <div id="photoItemsBreakdown" class="flex-col gap-1 text-xs text-muted"></div>
+
+                        <hr class="border-gray" style="margin:6px 0;">
+                        <p class="text-xs text-muted">Можешь подправить граммовку/масло перед записью в дневник:</p>
+
+                        <div class="grid-2 gap-2">
+                            <div class="input-group"><label>Название</label><input type="text" id="photoFoodNameInput" placeholder="Блюдо"></div>
+                            <div class="input-group"><label>Ккал</label><input type="number" id="photoFoodKcal" placeholder="0"></div>
+                        </div>
+                        <div class="grid-3 gap-2">
+                            <div class="input-group"><label>Белки (г)</label><input type="number" id="photoFoodB" placeholder="0"></div>
+                            <div class="input-group"><label>Жиры (г)</label><input type="number" id="photoFoodF" placeholder="0"></div>
+                            <div class="input-group"><label>Углеводы (г)</label><input type="number" id="photoFoodU" placeholder="0"></div>
+                        </div>
+
+                        <button class="btn btn-success mt-1" id="btnSavePhotoFood" onclick="savePhotographerFood()">✅ Записать в итог БЖУ</button>
                     </div>
                 </div>
 
@@ -449,18 +512,22 @@
 
                 <!-- 9. ИИ-ТРЕНЕР -->
                 <div id="module-chat" class="module">
-                    <div class="flex justify-between align-center mb-2">
+                    <div class="flex justify-between align-center mb-2 gap-2">
                         <h2 style="margin:0;">💬 ИИ-Тренер</h2>
                         <span id="chatModelBadge" class="badge-pill">Модель не выбрана</span>
                     </div>
-                    <button class="btn btn-outline btn-sm mb-2" onclick="generate14DayDigest()">📊 Сгенерировать отчёт за 14 дней</button>
-                    <div class="card flex-col gap-2" style="height: 54vh; display:flex; flex-direction:column;">
-                        <div id="chatHistory" style="flex:1; overflow-y:auto; background:#0d1117; padding:10px; border-radius:8px; display:flex; flex-direction:column; gap:10px;">
+                    <div id="chatKeyStatusHint" class="text-xs text-warning mb-2" style="display:none;"></div>
+                    <div class="grid-2 gap-2 mb-2">
+                        <button class="btn btn-outline btn-sm" onclick="generate14DayDigest()">📊 Разбор за 14 дней</button>
+                        <button class="btn btn-outline btn-sm" onclick="clearTrainerChat()">🧹 Очистить чат</button>
+                    </div>
+                    <div class="card flex-col gap-2" style="min-height: 54vh; display:flex; flex-direction:column;">
+                        <div id="chatHistory" style="flex:1; min-height:240px; max-height:52vh; overflow-y:auto; background:#0d1117; padding:10px; border-radius:8px; display:flex; flex-direction:column; gap:10px;">
                             <div class="text-muted text-sm text-center">Укажи свой Gemini API ключ и выбери модель в ⚙️ Настройки.</div>
                         </div>
-                        <div class="flex gap-2">
-                            <input type="text" id="chatInput" placeholder="Спроси тренера..." style="flex:1;">
-                            <button class="btn btn-primary" style="width:auto;" onclick="sendChatMessage()">🚀</button>
+                        <div class="flex gap-2 align-center">
+                            <textarea id="chatInput" rows="2" placeholder="Спроси тренера..." style="flex:1; min-height:48px; resize:none;"></textarea>
+                            <button id="chatSendBtn" type="button" class="btn btn-primary" style="width:auto; min-width:56px;" onclick="sendChatMessage()">🚀</button>
                         </div>
                     </div>
                 </div>
@@ -512,21 +579,22 @@
                         <div class="input-group">
                             <label>API ключ ИИ-Тренера (чат и анализ ЦНС)</label>
                             <div class="flex gap-1">
-                                <input type="password" id="geminiTrainerKey" placeholder="AIza... или AQ..." style="flex:1;">
+                                <input type="password" id="geminiTrainerKey" placeholder="AIza... или AQ..." style="flex:1;" onchange="syncApiKeysFromInputs(true)">
                                 <button class="btn btn-outline btn-sm" style="width:auto;" onclick="loadModelsForRole('trainer')">🔄 Модели</button>
                             </div>
                         </div>
                         <div class="grid-2 gap-2">
                             <div class="input-group">
                                 <label>Модель Тренера</label>
-                                <select id="trainerModelSelect"></select>
+                                <select id="trainerModelSelect" onchange="syncApiKeysFromInputs(true)"></select>
                             </div>
                             <div class="input-group">
                                 <label>Thinking (Тренер)</label>
-                                <select id="geminiThinkingSelect">
-                                    <option value="HIGH">HIGH (Оптимально)</option>
-                                    <option value="MEDIUM">MEDIUM (Эконом)</option>
-                                    <option value="LOW">LOW (Мин. лимиты)</option>
+                                <select id="geminiThinkingSelect" onchange="syncApiKeysFromInputs(true)">
+                                    <option value="MEDIUM">MEDIUM (Быстро и умно)</option>
+                                    <option value="HIGH">HIGH (Глубокий)</option>
+                                    <option value="XHIGH">XHIGH (Макс. Hydrogen)</option>
+                                    <option value="LOW">LOW (Мин. задержка)</option>
                                 </select>
                             </div>
                         </div>
@@ -534,25 +602,29 @@
                         <hr class="border-gray" style="margin:6px 0;">
 
                         <div class="input-group">
-                            <label>API ключ Фотографа / Vision (разбор фото еды)</label>
+                            <label>API ключ Фотографа / Vision (пусто = ключ Тренера)</label>
                             <div class="flex gap-1">
-                                <input type="password" id="geminiVisionKey" placeholder="AIza... или AQ..." style="flex:1;">
+                                <input type="password" id="geminiVisionKey" placeholder="AIza... или AQ..." style="flex:1;" onchange="syncApiKeysFromInputs(true)">
                                 <button class="btn btn-outline btn-sm" style="width:auto;" onclick="loadModelsForRole('vision')">🔄 Модели</button>
                             </div>
                         </div>
                         <div class="input-group">
                             <label>Модель Фотографа (Vision)</label>
-                            <select id="visionModelSelect"></select>
+                            <select id="visionModelSelect" onchange="syncApiKeysFromInputs(true)"></select>
                         </div>
 
                         <hr class="border-gray" style="margin:6px 0;">
 
                         <div class="input-group">
                             <label>Токен alerts.in.ua (опц., приоритет поверх siren.pp.ua)</label>
-                            <input type="password" id="alertsInUaToken" placeholder="Пусто = бесплатный siren.pp.ua (город) + ubilling">
+                            <input type="password" id="alertsInUaToken" placeholder="Пусто = бесплатный siren.pp.ua (город) + ubilling" onchange="syncApiKeysFromInputs(true)">
                         </div>
 
-                        <button class="btn btn-primary" onclick="saveSettings()">💾 Сохранить API настройки</button>
+                        <div class="grid-2 gap-2">
+                            <button class="btn btn-primary" onclick="saveSettings()">💾 Сохранить API</button>
+                            <button class="btn btn-outline" id="btnTestGeminiKey" onclick="testGeminiKeyConnection()">🔌 Тест ключа</button>
+                        </div>
+                        <div id="geminiTestStatus" class="text-xs text-muted"></div>
                     </div>
 
                     <div class="card flex-col gap-2 mb-2" style="border-color:rgba(241,196,15,0.4);">

@@ -104,7 +104,7 @@ function createDefaultState() {
             visionKey: "",
             visionModel: "gemini-4-hydrogen",
             visionModels: ["gemini-4-hydrogen", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
-            thinkingLevel: "HIGH",
+            thinkingLevel: "MEDIUM",
             alertsInUaToken: ""
         },
         cnsTriggers: ["Дроны", "Тревога", "Новости", "Недосып", "Тяж. тренировка"],
@@ -336,8 +336,10 @@ window.hydrateAllUI = () => {
 
 window.wipeRuntimeSensitiveDom = () => {
     lastAirAlertActive = null;
+    if (window.clearPhotoMemory) window.clearPhotoMemory();
     const fields = [
         "foodName", "foodB", "foodF", "foodU", "foodKcal", "smartFoodInput",
+        "photoContextInput", "photoFoodNameInput", "photoFoodB", "photoFoodF", "photoFoodU", "photoFoodKcal",
         "chatInput", "steganoPassInput", "tankBackupPassInput",
         "oldCurrentPin", "newCurrentPin", "geminiTrainerKey", "geminiVisionKey", "alertsInUaToken",
         "customWaterInput", "qrInputText"
@@ -350,17 +352,22 @@ window.wipeRuntimeSensitiveDom = () => {
     const clearHtmlIds = [
         "chatHistory", "qrOutput", "hrvResult", "todayFoodList",
         "suppsContainer", "quickSuppsList", "cnsInsightsList", "sosSubButtons",
-        "foodImageStatus", "pvtBaselineInfo", "airAlertDetail", "heatmapGrid"
+        "foodImageStatus", "photoStatusBox", "photoAiComment", "photoUncertainBox",
+        "photoItemsBreakdown", "photoFoodTitle", "photoWeightRange", "geminiTestStatus",
+        "pvtBaselineInfo", "airAlertDetail", "heatmapGrid"
     ];
     clearHtmlIds.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.innerHTML = "";
     });
 
-    const qrOut = document.getElementById("qrOutput");
-    if (qrOut) qrOut.style.display = "none";
-    const hrvRes = document.getElementById("hrvResult");
-    if (hrvRes) hrvRes.style.display = "none";
+    const hideIds = ["qrOutput", "hrvResult", "photoPreviewWrap", "photoResultCard", "photoUncertainBox"];
+    hideIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = "none";
+    });
+    const previewImg = document.getElementById("photoPreviewImg");
+    if (previewImg) previewImg.removeAttribute("src");
 };
 
 window.activeModuleId = "dashboard";
@@ -379,6 +386,9 @@ window.showModule = (id) => {
             window.renderCnsDashboard();
             if (window.renderCnsInsights) window.renderCnsInsights();
         }, 50);
+    }
+    if ((id === "chat" || id === "photographer") && window.loadApiKeysUI) {
+        window.loadApiKeysUI();
     }
     if (id === "settings" && window.refreshExactAlarmStatus) {
         window.refreshExactAlarmStatus();
@@ -542,39 +552,61 @@ window.syncWaterFromNative = (pushOnly = false) => {
 };
 
 // --- Food Totals ---
-window.saveHybridFood = () => {
-    if (!window.assertVaultUnlocked()) return;
+window.commitFoodEntry = ({ name, b, f, u, kcal }) => {
+    if (!window.assertVaultUnlocked()) return false;
     window.haptic(30);
-    const name = (document.getElementById("foodName").value || "Еда").trim();
-    const b = safeParseInt(document.getElementById("foodB").value);
-    const f = safeParseInt(document.getElementById("foodF").value);
-    const u = safeParseInt(document.getElementById("foodU").value);
-    const k = safeParseInt(document.getElementById("foodKcal").value);
+    const cleanName = (name || "Еда").trim() || "Еда";
+    const pb = Math.max(0, safeParseInt(b, 0));
+    const pf = Math.max(0, safeParseInt(f, 0));
+    const pu = Math.max(0, safeParseInt(u, 0));
+    const pk = Math.max(0, safeParseInt(kcal, 0));
 
-    if (k === 0 && b === 0 && f === 0 && u === 0) {
-        return showToast("Введи калории или БЖУ!");
+    if (pk === 0 && pb === 0 && pf === 0 && pu === 0) {
+        showToast("Введи калории или БЖУ!");
+        return false;
     }
 
-    if (window.lastAiFoodPrediction !== null && Math.abs(k - window.lastAiFoodPrediction) > 50) {
+    if (window.lastAiFoodPrediction !== null && Math.abs(pk - window.lastAiFoodPrediction) > 50) {
         AppState.foodEditErrors = (AppState.foodEditErrors || 0) + 1;
     }
     window.lastAiFoodPrediction = null;
 
-    AppState.food.totalB += b;
-    AppState.food.totalF += f;
-    AppState.food.totalU += u;
-    AppState.food.totalKcal += k;
-    AppState.todayFoodItems.push({ name, b, f, u, k, time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) });
+    AppState.food.totalB += pb;
+    AppState.food.totalF += pf;
+    AppState.food.totalU += pu;
+    AppState.food.totalKcal += pk;
+    AppState.todayFoodItems.push({
+        name: cleanName,
+        b: pb,
+        f: pf,
+        u: pu,
+        k: pk,
+        time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+    });
 
-    window.logEvent("food", { name, B: b, F: f, U: u, Kcal: k });
+    window.logEvent("food", { name: cleanName, B: pb, F: pf, U: pu, Kcal: pk });
     window.updateFoodUI();
     saveUIState();
+    showToast(`✅ Добавлено: ${cleanName} (+${pk} ккал)`);
+    return true;
+};
+
+window.saveHybridFood = () => {
+    const ok = window.commitFoodEntry({
+        name: document.getElementById("foodName").value,
+        b: document.getElementById("foodB").value,
+        f: document.getElementById("foodF").value,
+        u: document.getElementById("foodU").value,
+        kcal: document.getElementById("foodKcal").value
+    });
+    if (!ok) return;
 
     ["smartFoodInput", "foodName", "foodB", "foodF", "foodU", "foodKcal"].forEach(id => {
-        document.getElementById(id).value = "";
+        const el = document.getElementById(id);
+        if (el) el.value = "";
     });
-    document.getElementById("foodImageStatus").innerText = "";
-    showToast(`✅ Добавлено: ${name} (+${k} ккал)`);
+    const imgStat = document.getElementById("foodImageStatus");
+    if (imgStat) imgStat.innerText = "";
 };
 
 window.resetBJU = () => {
@@ -989,10 +1021,11 @@ window.verifyDomContract = () => {
     const requiredIds = [
         "loginOverlay", "vaultSetupContainer", "calcModeContainer", "calcDisplay",
         "batteryStatus", "airAlertStatus", "weatherStatus",
-        "module-dashboard", "module-dossier", "module-nutrition", "module-water",
-        "module-sleep", "module-workout", "module-biometrics", "module-pharma",
-        "module-chat", "module-stegano", "module-settings", "module-sos",
-        "cnsChart", "pvtButton", "suppsContainer", "chatHistory",
+        "module-dashboard", "module-dossier", "module-nutrition", "module-photographer",
+        "module-water", "module-sleep", "module-workout", "module-biometrics",
+        "module-pharma", "module-chat", "module-stegano", "module-settings", "module-sos",
+        "cnsChart", "pvtButton", "suppsContainer", "chatHistory", "chatSendBtn",
+        "photoPreviewImg", "photoResultCard",
         "trainerModelSelect", "visionModelSelect", "appVersionBadge"
     ];
     const missing = requiredIds.filter(id => !document.getElementById(id));
