@@ -26,8 +26,10 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.util.Base64
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -114,11 +116,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Anti-forensics: block OS screenshots, screen recording, and Recents thumbnails
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE
-        )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         enableEdgeToEdge(
@@ -219,6 +216,10 @@ class MainActivity : ComponentActivity() {
 
                         WebView(ctx).apply {
                             webViewRef = this
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
                             setBackgroundColor(AndroidColor.parseColor("#0D1117"))
                             settings.apply {
                                 javaScriptEnabled = true
@@ -251,6 +252,14 @@ class MainActivity : ComponentActivity() {
                                 ): Boolean {
                                     val url = request.url ?: return true
                                     return !(url.scheme == "https" && url.host == "appassets.androidplatform.net")
+                                }
+
+                                override fun onRenderProcessGone(
+                                    view: WebView?,
+                                    detail: RenderProcessGoneDetail?
+                                ): Boolean {
+                                    view?.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+                                    return true
                                 }
                             }
 

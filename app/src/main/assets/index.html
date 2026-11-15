@@ -30,6 +30,8 @@
             document.body.classList.remove('lockscreen-sos-mode');
             if (window.closeAppModal) window.closeAppModal();
             if (window.wipeRuntimeSensitiveDom) window.wipeRuntimeSensitiveDom();
+            const appBox = document.getElementById('appContainer');
+            if (appBox) appBox.style.display = 'none';
             const overlay = document.getElementById('loginOverlay');
             if (overlay) overlay.style.display = 'flex';
         };
@@ -37,6 +39,12 @@
         window.onAppBackgrounded = function () {
             window.lockToStealth();
         };
+
+        window.addEventListener('error', function (ev) {
+            if (window.showToast && ev && ev.message) {
+                window.showToast('⚠️ JS: ' + ev.message);
+            }
+        });
 
         document.addEventListener('visibilitychange', function () {
             const bridgeActive = Boolean(
@@ -108,7 +116,7 @@
         </div>
     </div>
 
-    <div class="app-container">
+    <div id="appContainer" class="app-container" style="display:none;">
         <header>
             <div class="header-top">
                 <h1>Жилистый Танк v4.2 🦾</h1>

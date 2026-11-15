@@ -105,15 +105,18 @@ async function verifyBrowserPinHash(role, candidate) {
 }
 
 window.openLockscreenSOS = () => {
+    const appBox = document.getElementById("appContainer");
     if (VaultSession.unlocked) {
         document.body.classList.remove("lockscreen-sos-mode");
         document.getElementById("loginOverlay").style.display = "none";
+        if (appBox) { appBox.style.display = "flex"; void appBox.offsetHeight; }
         window.showModule("sos");
         if (window.showSosCategory) window.showSosCategory("panic");
         return;
     }
     document.body.classList.add("lockscreen-sos-mode");
     document.getElementById("loginOverlay").style.display = "none";
+    if (appBox) { appBox.style.display = "flex"; void appBox.offsetHeight; }
     document.querySelectorAll(".module").forEach(el => el.classList.remove("active"));
     const sosMod = document.getElementById("module-sos");
     if (sosMod) sosMod.classList.add("active");
@@ -127,6 +130,8 @@ window.exitLockscreenSOS = () => {
     if (sosMod) sosMod.classList.remove("active");
     const sosSub = document.getElementById("sosSubContainer");
     if (sosSub) sosSub.style.display = "none";
+    const appBox = document.getElementById("appContainer");
+    if (appBox) appBox.style.display = "none";
     document.getElementById("loginOverlay").style.display = "flex";
 };
 
@@ -167,7 +172,7 @@ window.initStealthGate = () => {
 };
 
 window.completeVaultSetup = async () => {
-    const realPin = (document.getElementById("setupRealPin").value || "").trim();
+    const realPin = (document.getElementById("setupRealPin").value || "").replace(/\s+/g, "");
     if (realPin.length < 4) return showToast("Задай PIN от 4 символов (цифры или формула)!");
 
     const btn = document.getElementById("btnInitVault");
@@ -207,8 +212,17 @@ window.onVaultSetupDone = (resStr) => {
         document.getElementById("vaultSetupContainer").style.display = "none";
         document.getElementById("calcModeContainer").style.display = "flex";
         document.getElementById("loginOverlay").style.display = "none";
+        const appBox = document.getElementById("appContainer");
+        if (appBox) {
+            appBox.style.display = "flex";
+            void appBox.offsetHeight;
+        }
         window.showModule("dashboard");
-        window.hydrateAllUI();
+        try {
+            window.hydrateAllUI();
+        } catch (hydrateErr) {
+            showToast("⚠️ Ошибка отрисовки: " + (hydrateErr?.message || hydrateErr));
+        }
         showToast("🔐 Крипто-сейф создан!");
     } catch (_) {
         showToast("❌ Ошибка ответа Vault");
@@ -303,8 +317,17 @@ window.onVaultUnlockResult = (resStr) => {
             document.body.classList.remove("lockscreen-sos-mode");
             document.getElementById("loginOverlay").style.display = "none";
             if (window.wipeRuntimeSensitiveDom) window.wipeRuntimeSensitiveDom();
+            const appBox = document.getElementById("appContainer");
+            if (appBox) {
+                appBox.style.display = "flex";
+                void appBox.offsetHeight;
+            }
             window.showModule("dashboard");
-            window.hydrateAllUI();
+            try {
+                window.hydrateAllUI();
+            } catch (hydrateErr) {
+                showToast("⚠️ Ошибка отрисовки: " + (hydrateErr?.message || hydrateErr));
+            }
 
             if (res.status === "WIPED") {
                 showToast("🧹 Крипто-шреддинг выполнен");
@@ -326,8 +349,8 @@ window.onVaultUnlockResult = (resStr) => {
 // --- Slot-Neutral PIN Change (Works identically in Slot 0 & Slot 1 for Plausible Deniability) ---
 window.changeCurrentSlotPinUI = async () => {
     if (!window.assertVaultUnlocked()) return;
-    const oldPin = (document.getElementById("oldCurrentPin").value || "").trim();
-    const newPin = (document.getElementById("newCurrentPin").value || "").trim();
+    const oldPin = (document.getElementById("oldCurrentPin").value || "").replace(/\s+/g, "");
+    const newPin = (document.getElementById("newCurrentPin").value || "").replace(/\s+/g, "");
 
     if (!oldPin) return showToast("Введи текущий PIN-код");
     if (newPin.length < 4) return showToast("Новый PIN должен быть от 4 символов!");
@@ -405,9 +428,9 @@ window.handleVersionTap = () => {
 
 window.saveHiddenCodesFromModal = async () => {
     if (!window.assertVaultUnlocked() || VaultSession.slot !== 0) return;
-    const realPin = (document.getElementById("hiddenRealPinConfirm").value || "").trim();
-    const decoyPin = (document.getElementById("hiddenDecoyPin").value || "").trim();
-    const panicPin = (document.getElementById("hiddenPanicPin").value || "").trim();
+    const realPin = (document.getElementById("hiddenRealPinConfirm").value || "").replace(/\s+/g, "");
+    const decoyPin = (document.getElementById("hiddenDecoyPin").value || "").replace(/\s+/g, "");
+    const panicPin = (document.getElementById("hiddenPanicPin").value || "").replace(/\s+/g, "");
 
     if (!realPin) return showToast("Введи основной PIN для подтверждения!");
     if (decoyPin && (decoyPin.length < 4 || decoyPin === realPin)) {
