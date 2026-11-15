@@ -649,7 +649,11 @@ const CITY_MAP = {
         oblast: "Чернігівська область",
         raionUid: "140",
         matchKw: "черніг",
-        sirenCommunityNames: ["чернігівська територіальна громада", "м. чернігів"],
+        sirenCommunityNames: [
+            "чернігівська територіальна громада",
+            "чернігівська міська територіальна громада",
+            "м. чернігів"
+        ],
         sirenDistrictNames: ["чернігівський район"],
         sirenStateNames: ["чернігівська область"]
     },
@@ -711,16 +715,29 @@ const CITY_MAP = {
 
 const SIREN_THREAT_LABELS = {
     AIR: "Воздушная тревога",
-    ARTILLERY: "Артобстрел",
+    ARTILLERY: "Угроза артобстрела",
     URBAN_FIGHTS: "Уличные бои",
     CHEMICAL: "Хим. угроза",
     NUCLEAR: "Радиац. угроза",
-    INFO: "Предупреждение"
+    INFO: "Предупреждение",
+    DRONE: "Угроза БПЛА",
+    DRONES: "Угроза БПЛА"
+};
+
+const ALERTS_IN_UA_TYPE_LABELS = {
+    air_raid: "Воздушная тревога",
+    artillery_shelling: "Угроза артобстрела",
+    urban_fights: "Уличные бои",
+    chemical: "Хим. угроза",
+    nuclear: "Радиац. угроза",
+    drone: "Угроза БПЛА",
+    drones: "Угроза БПЛА"
 };
 
 function formatAlertTimestamp(raw) {
     if (!raw) return new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-    const d = new Date(raw);
+    const normalized = String(raw).trim().replace(" ", "T");
+    const d = new Date(normalized);
     if (!isNaN(d.getTime())) {
         return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) +
             " · " + d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
@@ -735,7 +752,12 @@ function getCityInfo() {
 
 window.refreshAirAlerts = (manual = false) => {
     const cbName = "onAirAlertsLoaded";
-    if (manual) document.getElementById("airAlertStatus").innerText = "📡 Опрос...";
+    if (manual) {
+        const pill = document.getElementById("airAlertStatus");
+        const detail = document.getElementById("airAlertDetail");
+        if (pill) pill.innerText = "📡 Опрос...";
+        if (detail) detail.innerHTML = `<span class="text-primary">🔄 Опрос радаров тревог...</span>`;
+    }
     const token = (AppState.apiKeys && AppState.apiKeys.alertsInUaToken) || "";
 
     if (window.AndroidBridge && window.AndroidBridge.fetchAirAlertsAsync) {
@@ -799,15 +821,15 @@ window.onAirAlertsLoaded = (wrapperStr) => {
             if (chosen) {
                 const locType = String(chosen.location_type || "").toLowerCase();
                 scopeLabel = locType === "oblast" ? `${city.cityName} (область)` : `г. ${city.cityName}`;
-                const alertType = String(chosen.alert_type || "");
-                if (alertType && alertType !== "air_raid") threatText = alertType;
+                const alertType = String(chosen.alert_type || "").toLowerCase();
+                if (alertType) threatText = ALERTS_IN_UA_TYPE_LABELS[alertType] || alertType;
                 changed = formatAlertTimestamp(chosen.started_at);
             } else {
                 scopeLabel = `г. ${city.cityName}`;
                 changed = formatAlertTimestamp(null);
             }
         } else if (sourceTag === "siren.pp.ua" || Array.isArray(data) || Array.isArray(data.activeAlerts)) {
-            // siren.pp.ua / ukrainealarm v3 format (community / district / oblast precision)
+            // siren.pp.ua / ukrainealarm v3 format (supports both flat top-level & nested state.activeAlerts[])
             sourceTag = "siren.pp.ua";
             const entries = Array.isArray(data) ? data : (data.activeAlerts || []);
             const idx = (wrapper.regionsIndex && wrapper.regionsIndex[city.cityName]) || {};
@@ -816,6 +838,19 @@ window.onAirAlertsLoaded = (wrapperStr) => {
                 if (!e) return false;
                 if (Array.isArray(e.activeAlerts)) return e.activeAlerts.length > 0;
                 return e.active !== false;
+            });
+
+            // Flatten top-level entries AND nested activeAlerts items that specify their own regionId/regionName
+            const flatNodes = [];
+            activeEntries.forEach(e => {
+                flatNodes.push(e);
+                if (Array.isArray(e.activeAlerts)) {
+                    e.activeAlerts.forEach(sub => {
+                        if (sub && (sub.regionId || sub.regionName || sub.regionType)) {
+                            flatNodes.push(sub);
+                        }
+                    });
+                }
             });
 
             const matchCommunity = e => {
@@ -837,18 +872,18 @@ window.onAirAlertsLoaded = (wrapperStr) => {
                     city.sirenStateNames.includes(rname);
             };
 
-            const commHit = activeEntries.find(matchCommunity);
-            const distHit = !commHit ? activeEntries.find(matchDistrict) : null;
+            const commHit = flatNodes.find(matchCommunity);
+            const distHit = !commHit ? flatNodes.find(matchDistrict) : null;
             const stateHit = (!commHit && !distHit) ? activeEntries.find(matchState) : null;
 
             const stateSubAlerts = stateHit && Array.isArray(stateHit.activeAlerts) ? stateHit.activeAlerts : [];
             const stateWideAlert = Boolean(stateHit) && (
                 stateSubAlerts.length === 0 ||
-                stateSubAlerts.some(a =>
-                    !a.regionType ||
-                    String(a.regionType).toLowerCase() === "state" ||
-                    String(a.regionId || "") === String(stateHit.regionId || "")
-                )
+                stateSubAlerts.some(a => {
+                    const rt = String(a.regionType || "").toLowerCase();
+                    return !rt || rt === "state" || rt === "oblast" ||
+                        String(a.regionId || "") === String(stateHit.regionId || "");
+                })
             );
 
             const hit = commHit || distHit || (stateWideAlert ? stateHit : null);
@@ -858,16 +893,22 @@ window.onAirAlertsLoaded = (wrapperStr) => {
                     ? `г. ${city.cityName} (громада)`
                     : (distHit ? `${city.cityName} / р-н` : `${city.cityName} (вся область)`);
                 const sub = Array.isArray(hit.activeAlerts) && hit.activeAlerts.length > 0 ? hit.activeAlerts : [hit];
-                const rawTypes = sub.map(a => SIREN_THREAT_LABELS[a.type] || a.type).filter(Boolean);
+                const rawTypes = sub.map(a => {
+                    const key = String(a.type || "").toUpperCase();
+                    return SIREN_THREAT_LABELS[key] || a.type;
+                }).filter(Boolean);
                 const uniqTypes = Array.from(new Set(rawTypes));
                 if (uniqTypes.length > 0) threatText = uniqTypes.join(", ");
-                changed = formatAlertTimestamp(sub[0]?.lastUpdate || hit.lastUpdate || hit.changed);
+                changed = formatAlertTimestamp(sub[0]?.lastUpdate || sub[0]?.lastUpdateDate || hit.lastUpdate || hit.changed);
             } else {
                 isActive = false;
                 scopeLabel = `г. ${city.cityName} (громада)`;
                 changed = formatAlertTimestamp(null);
                 if (stateHit) {
-                    const partialNote = "В области есть локальные тревоги (вне города/р-на)";
+                    const otherNames = stateSubAlerts.map(a => a.regionName).filter(Boolean).slice(0, 3);
+                    const partialNote = otherNames.length > 0
+                        ? `В области локальная тревога: ${otherNames.join(", ")}`
+                        : "В области есть локальные тревоги (вне города/р-на)";
                     extraNote = extraNote ? `${extraNote} · ${partialNote}` : partialNote;
                 }
             }
@@ -886,7 +927,8 @@ window.onAirAlertsLoaded = (wrapperStr) => {
         pill.innerText = isActive ? "🚨 ТРЕВОГА" : "🟢 Отбой";
 
         const threatLine = threatText ? ` · ${escapeHtml(threatText)}` : "";
-        const sourceLine = sourceTag ? ` · ${escapeHtml(sourceTag)}` : "";
+        const viaNote = wrapper.via ? ` (${escapeHtml(wrapper.via)})` : "";
+        const sourceLine = sourceTag ? ` · ${escapeHtml(sourceTag)}${viaNote}` : "";
         const noteLine = extraNote ? `<br><span class="text-xs text-warning">${escapeHtml(extraNote)}</span>` : "";
 
         detail.innerHTML = isActive
@@ -911,10 +953,13 @@ window.onAirAlertsLoaded = (wrapperStr) => {
             }
         }
         lastAirAlertActive = isActive;
-    } catch (_) {
+    } catch (err) {
         pill.className = "alert-pill";
         pill.innerText = "📡 Оффлайн";
-        if (detail) detail.innerText = "Радар тревог недоступен (нет сети или блокировка).";
+        if (detail) {
+            const reason = err?.message ? ` (${escapeHtml(err.message)})` : "";
+            detail.innerHTML = `<span class="text-danger">Радар тревог недоступен${reason}.</span><br><span class="text-xs text-muted">Проверь в ⚙️ Настройки → 🌐 Проверка связи.</span>`;
+        }
     }
 };
 

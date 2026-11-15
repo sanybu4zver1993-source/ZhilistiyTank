@@ -23,7 +23,11 @@ object AirAlertHelper {
             cityKey = "Чернигов",
             stateExact = "чернігівська область",
             districtExact = "чернігівський район",
-            communityExacts = listOf("чернігівська територіальна громада", "м. чернігів")
+            communityExacts = listOf(
+                "чернігівська територіальна громада",
+                "чернігівська міська територіальна громада",
+                "м. чернігів"
+            )
         ),
         CityMatcher(
             cityKey = "Киев",
@@ -255,14 +259,18 @@ object AirAlertHelper {
         synchronized(fetchLock) {
             val now = System.currentTimeMillis()
             val prev = lastResultJson
-            if (prev != null && tokenKey == lastTokenHash && (now - lastFetchAtMs) < ALERTS_COALESCE_MS) {
+            if (prev != null && prev.contains("\"ok\":true") && tokenKey == lastTokenHash && (now - lastFetchAtMs) < ALERTS_COALESCE_MS) {
                 return prev
             }
 
             val fresh = fetchAlertsUncoalesced(token, context)
-            lastResultJson = fresh
-            lastTokenHash = tokenKey
-            lastFetchAtMs = System.currentTimeMillis()
+            if (fresh.contains("\"ok\":true")) {
+                lastResultJson = fresh
+                lastTokenHash = tokenKey
+                lastFetchAtMs = System.currentTimeMillis()
+            } else {
+                lastResultJson = null
+            }
             return fresh
         }
     }
@@ -271,72 +279,100 @@ object AirAlertHelper {
         var fallbackNote = ""
 
         if (token.isNotEmpty()) {
-            val alertsInUaRes = httpGet(
+            val alertsInUaRes = httpGetEx(
                 urlString = "https://api.alerts.in.ua/v1/alerts/active.json",
                 bearerToken = token,
                 connectMs = 8_000,
                 readMs = 10_000
             )
-            if (alertsInUaRes.first in 200..299 && isValidAlertsInUaPayload(alertsInUaRes.second)) {
+            if (alertsInUaRes.ok && isValidAlertsInUaPayload(alertsInUaRes.body)) {
                 return JSONObject()
                     .put("ok", true)
                     .put("source", "alerts.in.ua")
-                    .put("body", alertsInUaRes.second)
+                    .put("via", alertsInUaRes.resolvedVia)
+                    .put("body", alertsInUaRes.body)
                     .toString()
             }
-            fallbackNote = "alerts.in.ua недоступен (код ${alertsInUaRes.first})"
+            fallbackNote = "alerts.in.ua недоступен (${if (alertsInUaRes.status > 0) "код ${alertsInUaRes.status}" else alertsInUaRes.error.ifBlank { "сеть" }})"
         }
 
         // Primary keyless radar with city/district/hromada precision: siren.pp.ua
         val regionsIndex = getOrFetchSirenRegionsIndex(context)
-        val sirenRes = httpGet(
+        val sirenRes = httpGetEx(
             urlString = "https://siren.pp.ua/api/v3/alerts",
             bearerToken = null,
             connectMs = 8_000,
             readMs = 10_000
         )
-        if (sirenRes.first in 200..299 && isValidSirenAlertsPayload(sirenRes.second)) {
+        if (sirenRes.ok && isValidSirenAlertsPayload(sirenRes.body)) {
             return JSONObject()
                 .put("ok", true)
                 .put("source", "siren.pp.ua")
+                .put("via", sirenRes.resolvedVia)
                 .put("regionsIndex", regionsIndex)
-                .put("body", sirenRes.second)
+                .put("body", sirenRes.body)
                 .apply {
                     if (fallbackNote.isNotEmpty()) put("note", fallbackNote)
                 }
                 .toString()
         }
 
-        val sirenFailNote = if (sirenRes.first > 0) {
-            "siren.pp.ua код ${sirenRes.first}"
+        val sirenFailNote = if (sirenRes.status > 0) {
+            "siren.pp.ua HTTP ${sirenRes.status}"
         } else {
-            "siren.pp.ua недоступен"
+            "siren.pp.ua: ${sirenRes.error.ifBlank { "недоступен" }}"
         }
 
         // Automatic fallback radar (oblast precision): ubilling.net.ua
-        val ubillingRes = httpGet(
+        val ubillingRes = httpGetEx(
             urlString = "https://ubilling.net.ua/aerialalerts/",
             bearerToken = null,
             connectMs = 8_000,
             readMs = 10_000
         )
-        if (ubillingRes.first in 200..299 && isValidUbillingPayload(ubillingRes.second)) {
+        if (ubillingRes.ok && isValidUbillingPayload(ubillingRes.body)) {
             val combinedNote = listOf(fallbackNote, sirenFailNote).filter { it.isNotEmpty() }.joinToString("; ")
             return JSONObject()
                 .put("ok", true)
                 .put("source", "ubilling.net.ua")
-                .put("body", ubillingRes.second)
+                .put("via", ubillingRes.resolvedVia)
+                .put("body", ubillingRes.body)
                 .apply {
                     if (combinedNote.isNotEmpty()) put("note", combinedNote)
                 }
                 .toString()
         }
 
+        val ubillingFailNote = if (ubillingRes.status > 0) {
+            "ubilling HTTP ${ubillingRes.status}"
+        } else {
+            "ubilling: ${ubillingRes.error.ifBlank { "недоступен" }}"
+        }
+
         return JSONObject()
             .put("ok", false)
-            .put("status", ubillingRes.first)
-            .put("error", "Все радары недоступны ($sirenFailNote, ubilling код ${ubillingRes.first})")
+            .put("status", ubillingRes.status)
+            .put("error", "$sirenFailNote | $ubillingFailNote")
             .toString()
+    }
+
+    private fun httpGetEx(
+        urlString: String,
+        bearerToken: String?,
+        connectMs: Int,
+        readMs: Int
+    ): ResilientNetwork.HttpResponse {
+        val headers = if (!bearerToken.isNullOrBlank()) {
+            mapOf("Authorization" to "Bearer $bearerToken")
+        } else {
+            emptyMap()
+        }
+        return ResilientNetwork.get(
+            urlString = urlString,
+            headers = headers,
+            connectTimeoutMs = connectMs,
+            readTimeoutMs = readMs
+        )
     }
 
     private fun httpGet(
@@ -345,17 +381,7 @@ object AirAlertHelper {
         connectMs: Int,
         readMs: Int
     ): Pair<Int, String> {
-        val headers = if (!bearerToken.isNullOrBlank()) {
-            mapOf("Authorization" to "Bearer $bearerToken")
-        } else {
-            emptyMap()
-        }
-        val res = ResilientNetwork.get(
-            urlString = urlString,
-            headers = headers,
-            connectTimeoutMs = connectMs,
-            readTimeoutMs = readMs
-        )
+        val res = httpGetEx(urlString, bearerToken, connectMs, readMs)
         return res.status to res.body
     }
 }
