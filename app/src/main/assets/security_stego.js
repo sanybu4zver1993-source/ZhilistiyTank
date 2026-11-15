@@ -50,22 +50,48 @@ function evaluateSafeMath(expr) {
     return Math.round(res * 1e8) / 1e8;
 }
 
-// --- Stealth Calculator & Dual-PIN Crypto-Vault Gate ---
+// --- Stealth Calculator, Single-PIN Onboarding & RAM-only Vault Gate ---
 let currentCalc = "";
 let eqHoldTimer = null;
 let eqLongPressTriggered = false;
+let isUnlockingVault = false;
+let versionTapCount = 0;
+let versionTapTimer = null;
+
+window.openLockscreenSOS = () => {
+    if (VaultSession.unlocked) {
+        document.body.classList.remove("lockscreen-sos-mode");
+        document.getElementById("loginOverlay").style.display = "none";
+        window.showModule("sos");
+        if (window.showSosCategory) window.showSosCategory("panic");
+        return;
+    }
+    document.body.classList.add("lockscreen-sos-mode");
+    document.getElementById("loginOverlay").style.display = "none";
+    document.querySelectorAll(".module").forEach(el => el.classList.remove("active"));
+    const sosMod = document.getElementById("module-sos");
+    if (sosMod) sosMod.classList.add("active");
+    if (window.showSosCategory) window.showSosCategory("panic");
+};
+
+window.exitLockscreenSOS = () => {
+    if (window.stopAllSosTimers) window.stopAllSosTimers();
+    document.body.classList.remove("lockscreen-sos-mode");
+    const sosMod = document.getElementById("module-sos");
+    if (sosMod) sosMod.classList.remove("active");
+    const sosSub = document.getElementById("sosSubContainer");
+    if (sosSub) sosSub.style.display = "none";
+    document.getElementById("loginOverlay").style.display = "flex";
+};
 
 window.initStealthGate = () => {
     const setupBox = document.getElementById("vaultSetupContainer");
     const calcBox = document.getElementById("calcModeContainer");
 
     const hasNativeVault = Boolean(window.AndroidBridge && window.AndroidBridge.isVaultInitialized);
-    let initialized = false;
-    if (hasNativeVault) {
-        initialized = window.AndroidBridge.isVaultInitialized();
-    } else {
-        initialized = Boolean(localStorage.getItem("vt_browser_vault_init"));
-    }
+    const initialized = hasNativeVault
+        ? window.AndroidBridge.isVaultInitialized()
+        : Boolean(localStorage.getItem("vt_browser_vault_init"));
 
     if (!initialized) {
         setupBox.style.display = "flex";
@@ -83,9 +109,7 @@ window.initStealthGate = () => {
             eqHoldTimer = setTimeout(() => {
                 eqLongPressTriggered = true;
                 window.haptic([80, 60, 120]);
-                document.getElementById("loginOverlay").style.display = "none";
-                window.showModule("sos");
-                if (window.showSosCategory) window.showSosCategory("panic");
+                window.openLockscreenSOS();
             }, 800);
         };
         const cancelHold = () => clearTimeout(eqHoldTimer);
@@ -98,29 +122,19 @@ window.initStealthGate = () => {
 
 window.completeVaultSetup = () => {
     const realPin = (document.getElementById("setupRealPin").value || "").trim();
-    const decoyPin = (document.getElementById("setupDecoyPin").value || "").trim();
-    const panicPin = (document.getElementById("setupPanicPin").value || "").trim();
-
-    if (!realPin || !decoyPin) return showToast("Укажи оба PIN (Реальный и Фейковый)");
-    if (realPin === decoyPin) return showToast("Реальный и Фейковый PIN должны отличаться!");
-    if (panicPin && (panicPin === realPin || panicPin === decoyPin)) {
-        return showToast("Panic PIN не должен совпадать с рабочими PIN!");
-    }
+    if (realPin.length < 4) return showToast("Задай PIN от 4 символов (цифры или формула)!");
 
     const btn = document.getElementById("btnInitVault");
     btn.disabled = true;
     btn.innerText = "⏳ Создание AES-256 сейфа...";
 
-    window._pendingSetupPins = { realPin };
     const initialJson = JSON.stringify(AppState);
 
-    if (window.AndroidBridge && window.AndroidBridge.setupVaultAsync) {
-        window.AndroidBridge.setupVaultAsync(realPin, decoyPin, panicPin, initialJson, "onVaultSetupDone");
+    if (window.AndroidBridge && window.AndroidBridge.setupVaultSinglePinAsync) {
+        window.AndroidBridge.setupVaultSinglePinAsync(realPin, initialJson, "onVaultSetupDone");
     } else {
         localStorage.setItem("vt_browser_vault_init", "1");
         localStorage.setItem("vt_browser_pin_real", realPin);
-        localStorage.setItem("vt_browser_pin_decoy", decoyPin);
-        if (panicPin) localStorage.setItem("vt_browser_pin_panic", panicPin);
         sessionStorage.setItem("vt_fallback_slot_0", initialJson);
         window.onVaultSetupDone(JSON.stringify({ ok: true }));
     }
@@ -129,18 +143,20 @@ window.completeVaultSetup = () => {
 window.onVaultSetupDone = (resStr) => {
     const btn = document.getElementById("btnInitVault");
     if (btn) { btn.disabled = false; btn.innerText = "Создать и войти"; }
+    const setupInput = document.getElementById("setupRealPin");
+    if (setupInput) setupInput.value = "";
+
     try {
         const res = JSON.parse(resStr);
         if (!res.ok) return showToast("❌ Ошибка инициализации сейфа");
 
         VaultSession.unlocked = true;
         VaultSession.slot = 0;
-        VaultSession.pin = window._pendingSetupPins?.realPin || "";
-        window._pendingSetupPins = null;
 
         document.getElementById("vaultSetupContainer").style.display = "none";
         document.getElementById("calcModeContainer").style.display = "flex";
         document.getElementById("loginOverlay").style.display = "none";
+        window.showModule("dashboard");
         window.hydrateAllUI();
         showToast("🔐 Крипто-сейф создан!");
     } catch (_) {
@@ -163,26 +179,37 @@ window.calcEq = () => {
         eqLongPressTriggered = false;
         return;
     }
-    if (!currentCalc) return;
+    if (!currentCalc || isUnlockingVault) return;
     const candidate = currentCalc;
 
+    // Fast path (0.1ms): short inputs (< 4 chars) cannot be a PIN -> evaluate math immediately in JS
+    if (candidate.length < 4) {
+        try {
+            currentCalc = String(evaluateSafeMath(candidate));
+            document.getElementById("calcDisplay").innerText = currentCalc;
+        } catch (_) {
+            document.getElementById("calcDisplay").innerText = "Err";
+            currentCalc = "";
+        }
+        return;
+    }
+
     if (window.AndroidBridge && window.AndroidBridge.unlockVaultAsync) {
-        window._pendingAttemptPin = candidate;
+        isUnlockingVault = true;
         document.getElementById("calcDisplay").innerText = "...";
         window.AndroidBridge.unlockVaultAsync(candidate, "onVaultUnlockResult");
     } else {
-        // Browser fallback
         const real = localStorage.getItem("vt_browser_pin_real");
         const decoy = localStorage.getItem("vt_browser_pin_decoy");
         const panic = localStorage.getItem("vt_browser_pin_panic");
-        if (candidate === panic) {
+        if (panic && candidate === panic) {
             localStorage.clear();
             sessionStorage.clear();
             window.onVaultUnlockResult(JSON.stringify({ status: "WIPED", slot: 1, stateJson: "{}" }));
-        } else if (candidate === real) {
+        } else if (real && candidate === real) {
             const raw = sessionStorage.getItem("vt_fallback_slot_0") || "{}";
             window.onVaultUnlockResult(JSON.stringify({ status: "OK", slot: 0, stateJson: raw }));
-        } else if (candidate === decoy) {
+        } else if (decoy && candidate === decoy) {
             const raw = sessionStorage.getItem("vt_fallback_slot_1") || "{}";
             window.onVaultUnlockResult(JSON.stringify({ status: "OK", slot: 1, stateJson: raw }));
         } else {
@@ -192,20 +219,21 @@ window.calcEq = () => {
 };
 
 window.onVaultUnlockResult = (resStr) => {
+    isUnlockingVault = false;
     try {
         const res = JSON.parse(resStr);
         if (res.status === "OK" || res.status === "WIPED") {
             VaultSession.unlocked = true;
             VaultSession.slot = res.slot || 0;
-            VaultSession.pin = window._pendingAttemptPin || "";
-            window._pendingAttemptPin = null;
 
             const parsedState = res.stateJson ? JSON.parse(res.stateJson) : {};
             window.AppState = window.mergeStateWithDefaults(parsedState);
 
             currentCalc = "";
             document.getElementById("calcDisplay").innerText = "0";
+            document.body.classList.remove("lockscreen-sos-mode");
             document.getElementById("loginOverlay").style.display = "none";
+            window.showModule("dashboard");
             window.hydrateAllUI();
 
             if (res.status === "WIPED") {
@@ -215,8 +243,7 @@ window.onVaultUnlockResult = (resStr) => {
         }
     } catch (_) {}
 
-    // Not a PIN — evaluate safely as math expression
-    window._pendingAttemptPin = null;
+    // Not a valid PIN — evaluate safely as math expression
     try {
         currentCalc = String(evaluateSafeMath(currentCalc));
         document.getElementById("calcDisplay").innerText = currentCalc;
@@ -226,40 +253,127 @@ window.onVaultUnlockResult = (resStr) => {
     }
 };
 
-window.changeVaultPinsUI = () => {
-    const oldPin = (document.getElementById("oldRealPin").value || "").trim();
-    const newReal = (document.getElementById("newRealPin").value || "").trim();
-    const newDecoy = (document.getElementById("newDecoyPin").value || "").trim();
-    const newPanic = (document.getElementById("newPanicPin").value || "").trim();
+// --- Slot-Neutral PIN Change (Works identically in Slot 0 & Slot 1 for Plausible Deniability) ---
+window.changeCurrentSlotPinUI = () => {
+    if (!window.assertVaultUnlocked()) return;
+    const oldPin = (document.getElementById("oldCurrentPin").value || "").trim();
+    const newPin = (document.getElementById("newCurrentPin").value || "").trim();
 
-    if (VaultSession.slot !== 0) return showToast("Смена PIN доступна только в основном профиле");
-    if (oldPin !== VaultSession.pin) return showToast("❌ Текущий Реальный PIN неверный");
-    if (!newReal || !newDecoy || newReal === newDecoy) return showToast("❌ Заполни разные Real и Decoy PIN");
+    if (!oldPin) return showToast("Введи текущий PIN-код");
+    if (newPin.length < 4) return showToast("Новый PIN должен быть от 4 символов!");
 
-    window._pendingSetupPins = { realPin: newReal };
-    if (window.AndroidBridge && window.AndroidBridge.setupVaultAsync) {
-        window.AndroidBridge.setupVaultAsync(newReal, newDecoy, newPanic, JSON.stringify(AppState), "onPinsUpdated");
+    if (window.AndroidBridge && window.AndroidBridge.changeCurrentSlotPinAsync) {
+        window.AndroidBridge.changeCurrentSlotPinAsync(oldPin, newPin, "onCurrentPinChanged");
     } else {
-        localStorage.setItem("vt_browser_pin_real", newReal);
-        localStorage.setItem("vt_browser_pin_decoy", newDecoy);
-        if (newPanic) localStorage.setItem("vt_browser_pin_panic", newPanic);
-        window.onPinsUpdated(JSON.stringify({ ok: true }));
+        const key = VaultSession.slot === 1 ? "vt_browser_pin_decoy" : "vt_browser_pin_real";
+        if (oldPin !== localStorage.getItem(key)) {
+            return window.onCurrentPinChanged(JSON.stringify({ status: "WRONG_PIN" }));
+        }
+        localStorage.setItem(key, newPin);
+        window.onCurrentPinChanged(JSON.stringify({ status: "OK" }));
     }
 };
 
-window.onPinsUpdated = (resStr) => {
+window.onCurrentPinChanged = (resStr) => {
     try {
         const res = JSON.parse(resStr);
-        if (res.ok && window._pendingSetupPins) {
-            VaultSession.pin = window._pendingSetupPins.realPin;
-            window._pendingSetupPins = null;
-            ["oldRealPin", "newRealPin", "newDecoyPin", "newPanicPin"].forEach(id => {
-                document.getElementById(id).value = "";
-            });
-            showToast("✅ Vault перешифрован под новые PIN!");
+        if (res.status === "OK") {
+            document.getElementById("oldCurrentPin").value = "";
+            document.getElementById("newCurrentPin").value = "";
+            showToast("✅ PIN-код доступа обновлён!");
+        } else if (res.status === "WRONG_PIN") {
+            showToast("❌ Текущий PIN введён неверно");
+        } else if (res.status === "INVALID_NEW_PIN") {
+            showToast("❌ Новый PIN слишком короткий");
+        } else if (res.status === "LOCKED") {
+            window.lockToStealth();
+        } else {
+            showToast("❌ Ошибка смены PIN");
         }
     } catch (_) {
-        showToast("❌ Ошибка перешифровки");
+        showToast("❌ Ошибка ответа Vault");
+    }
+};
+
+// --- Hidden 5-Tap Security Config (Strictly Slot 0; innocent toast in Slot 1) ---
+window.handleVersionTap = () => {
+    versionTapCount++;
+    clearTimeout(versionTapTimer);
+    versionTapTimer = setTimeout(() => { versionTapCount = 0; }, 3000);
+
+    if (versionTapCount < 5) return;
+    versionTapCount = 0;
+
+    if (!VaultSession.unlocked || VaultSession.slot !== 0) {
+        showToast("Сборка актуальна: v4.2-release");
+        return;
+    }
+
+    window.openAppModal("🛡 Дополнительные коды (Слот 0)", `
+        <div class="flex-col gap-2">
+            <p class="text-xs text-muted">Опционально задай второй (фейковый) профиль и PIN экстренного крипто-шреддинга. Пустые поля отключают соответствующий код (Слот 1 заполняется неотличимым шумом).</p>
+            <div class="input-group">
+                <label>Подтверди текущий основной PIN</label>
+                <input type="password" id="hiddenRealPinConfirm" placeholder="Твой основной PIN">
+            </div>
+            <div class="input-group">
+                <label>Дополнительный PIN (Слот 1, опц.)</label>
+                <input type="text" id="hiddenDecoyPin" placeholder="Пусто = отключён (от 4 симв.)">
+            </div>
+            <div class="input-group">
+                <label>Экстренный Wipe PIN (шреддинг, опц.)</label>
+                <input type="text" id="hiddenPanicPin" placeholder="Пусто = отключён (от 4 симв.)">
+            </div>
+            <button class="btn btn-primary mt-1" onclick="saveHiddenCodesFromModal()">🔐 Применить конфигурацию</button>
+        </div>
+    `);
+};
+
+window.saveHiddenCodesFromModal = () => {
+    if (!window.assertVaultUnlocked() || VaultSession.slot !== 0) return;
+    const realPin = (document.getElementById("hiddenRealPinConfirm").value || "").trim();
+    const decoyPin = (document.getElementById("hiddenDecoyPin").value || "").trim();
+    const panicPin = (document.getElementById("hiddenPanicPin").value || "").trim();
+
+    if (!realPin) return showToast("Введи основной PIN для подтверждения!");
+    if (decoyPin && (decoyPin.length < 4 || decoyPin === realPin)) {
+        return showToast("Дополнительный PIN должен быть от 4 симв. и отличаться от основного!");
+    }
+    if (panicPin && (panicPin.length < 4 || panicPin === realPin || panicPin === decoyPin)) {
+        return showToast("Wipe PIN должен быть от 4 симв. и не совпадать с рабочими!");
+    }
+
+    if (window.AndroidBridge && window.AndroidBridge.configureHiddenCodesAsync) {
+        window.AndroidBridge.configureHiddenCodesAsync(realPin, decoyPin, panicPin, "onHiddenCodesSaved");
+    } else {
+        if (realPin !== localStorage.getItem("vt_browser_pin_real")) {
+            return window.onHiddenCodesSaved(JSON.stringify({ status: "WRONG_REAL_PIN" }));
+        }
+        if (decoyPin) localStorage.setItem("vt_browser_pin_decoy", decoyPin);
+        else localStorage.removeItem("vt_browser_pin_decoy");
+        if (panicPin) localStorage.setItem("vt_browser_pin_panic", panicPin);
+        else localStorage.removeItem("vt_browser_pin_panic");
+        window.onHiddenCodesSaved(JSON.stringify({ status: "OK" }));
+    }
+};
+
+window.onHiddenCodesSaved = (resStr) => {
+    try {
+        const res = JSON.parse(resStr);
+        if (res.status === "OK") {
+            window.closeAppModal();
+            showToast("✅ Коды безопасности обновлены!");
+        } else if (res.status === "WRONG_REAL_PIN") {
+            showToast("❌ Основной PIN указан неверно");
+        } else if (res.status === "INVALID_DECOY") {
+            showToast("❌ Некорректный дополнительный PIN");
+        } else if (res.status === "INVALID_PANIC") {
+            showToast("❌ Некорректный Wipe PIN");
+        } else {
+            showToast("❌ Доступ запрещён");
+        }
+    } catch (_) {
+        showToast("❌ Ошибка ответа Vault");
     }
 };
 
@@ -267,6 +381,7 @@ window.onPinsUpdated = (resStr) => {
 const StegoVault = (() => {
     const MAGIC = new Uint8Array([0x56, 0x54, 0x4E, 0x4B]); // VTNK
     const PBKDF2_ITER = 150000;
+    const MAX_PNG_COMPRESSED_BYTES = 512 * 1024;
 
     async function deriveKey(password, salt, usage) {
         const keyMat = await crypto.subtle.importKey(
@@ -300,9 +415,12 @@ const StegoVault = (() => {
         return out;
     }
 
-    async function encryptPayloadBytes(stateObj, password) {
+    async function encryptPayloadBytes(stateObj, password, enforcePngCap = false) {
         const rawUtf8 = new TextEncoder().encode(JSON.stringify(stateObj));
         const compressed = await streamTransform(rawUtf8, new CompressionStream("deflate-raw"));
+        if (enforcePngCap && compressed.byteLength > MAX_PNG_COMPRESSED_BYTES) {
+            throw new Error(`Сжатый слепок (${Math.round(compressed.byteLength / 1024)} КБ) превышает лимит PNG (512 КБ) — используй экспорт .tank`);
+        }
         const salt = crypto.getRandomValues(new Uint8Array(16));
         const iv = crypto.getRandomValues(new Uint8Array(12));
         const key = await deriveKey(password, salt, "encrypt");
@@ -341,7 +459,7 @@ const StegoVault = (() => {
     }
 
     async function encodeToPngBytes(stateObj, password) {
-        const packet = await encryptPayloadBytes(stateObj, password);
+        const packet = await encryptPayloadBytes(stateObj, password, true);
         const totalBits = packet.length * 8;
         const minPixels = Math.ceil(totalBits / 3) + 1024;
         const side = Math.max(512, Math.ceil(Math.sqrt(minPixels)));
@@ -361,7 +479,7 @@ const StegoVault = (() => {
                 px[idx] = Math.min(248, Math.max(8, Math.floor((x / side) * 90 + 20) + (noiseBuf[x * 4] & 7)));
                 px[idx + 1] = Math.min(248, Math.max(8, Math.floor((y / side) * 110 + 30) + (noiseBuf[x * 4 + 1] & 7)));
                 px[idx + 2] = Math.min(248, Math.max(8, Math.floor(((x + y) / (2 * side)) * 130 + 40) + (noiseBuf[x * 4 + 2] & 7)));
-                px[idx + 3] = 255; // Strict Alpha=255
+                px[idx + 3] = 255;
             }
         }
 
@@ -427,6 +545,7 @@ const StegoVault = (() => {
 })();
 
 window.exportStegoBackup = async () => {
+    if (!window.assertVaultUnlocked()) return;
     const pass = (document.getElementById("steganoPassInput").value || "").trim();
     if (pass.length < 4) return showToast("Введи пароль (от 4 символов) в поле выше!");
     try {
@@ -434,11 +553,12 @@ window.exportStegoBackup = async () => {
         const pngBytes = await StegoVault.encodeToPngBytes({ AppState, ts: new Date().toISOString() }, pass);
         window.saveFileToDownloads(`tank_stego_${window.todayKey()}.png`, "image/png", pngBytes, false);
     } catch (e) {
-        showToast("❌ Ошибка стего-экспорта: " + e.message);
+        showToast("❌ " + e.message);
     }
 };
 
 window.importStegoBackup = async (event) => {
+    if (!window.assertVaultUnlocked()) return;
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -458,10 +578,11 @@ window.importStegoBackup = async (event) => {
 };
 
 window.exportEncryptedJSON = async () => {
+    if (!window.assertVaultUnlocked()) return;
     const pass = (document.getElementById("tankBackupPassInput").value || "").trim();
     if (pass.length < 4) return showToast("Введи пароль для .tank (от 4 символов)!");
     try {
-        const bytes = await StegoVault.encryptPayloadBytes({ AppState, ts: new Date().toISOString() }, pass);
+        const bytes = await StegoVault.encryptPayloadBytes({ AppState, ts: new Date().toISOString() }, pass, false);
         window.saveFileToDownloads(`VeinyTank_${window.todayKey()}.tank`, "application/octet-stream", bytes, false);
     } catch (e) {
         showToast("❌ Ошибка экспорта .tank: " + e.message);
@@ -469,6 +590,7 @@ window.exportEncryptedJSON = async () => {
 };
 
 window.importEncryptedJSON = async (event) => {
+    if (!window.assertVaultUnlocked()) return;
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -487,7 +609,18 @@ window.importEncryptedJSON = async (event) => {
     }
 };
 
-// --- QR Code Generator ---
+// --- Safe UTF-8 Byte-Checked QR Generator with Privacy Toggle ---
+function truncateUtf8Safe(str, maxBytes) {
+    const encoder = new TextEncoder();
+    if (encoder.encode(str).length <= maxBytes) return { text: str, truncated: false };
+    let out = "";
+    for (const ch of str) {
+        if (encoder.encode(out + ch).length > maxBytes - 4) break;
+        out += ch;
+    }
+    return { text: out + "…", truncated: true };
+}
+
 window.generateSummaryQR = () => {
     const box = document.getElementById("qrOutput");
     if (!box) return;
@@ -496,9 +629,26 @@ window.generateSummaryQR = () => {
     let text = (document.getElementById("qrInputText").value || "").trim();
     if (!text) {
         const d = AppState.dossier || {};
-        text = `VeinyTank|BB:${AppState.bodyBattery}|Blood:${d.blood || "-"}|Allergy:${d.allergies || "none"}|Cond:${(d.conditions || "-").slice(0, 60)}`;
+        const includeCond = Boolean(document.getElementById("qrIncludeConditions")?.checked);
+        text = `VeinyTank|BB:${AppState.bodyBattery}|Blood:${d.blood || "-"}|Allergy:${d.allergies || "none"}`;
+        if (includeCond && d.conditions) {
+            text += `|Cond:${d.conditions}`;
+        }
     }
+
+    const encodedLen = new TextEncoder().encode(text).length;
+    const correctLevel = encodedLen > 700 ? QRCode.CorrectLevel.L : QRCode.CorrectLevel.M;
+    const checked = truncateUtf8Safe(text, 1800);
+
     box.innerHTML = "";
     box.style.display = "flex";
-    new QRCode(box, { text, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.M });
+    try {
+        new QRCode(box, { text: checked.text, width: 220, height: 220, correctLevel });
+        if (checked.truncated) {
+            showToast("⚠️ Текст сокращён для надёжного чтения QR-сканером");
+        }
+    } catch (e) {
+        box.style.display = "none";
+        showToast("❌ Данные не помещаются в QR-код");
+    }
 };

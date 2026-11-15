@@ -176,6 +176,18 @@ main {
     to { opacity: 1; transform: translateY(0); }
 }
 
+/* Lockscreen Emergency SOS Isolation */
+body.lockscreen-sos-mode header,
+body.lockscreen-sos-mode #navGrid,
+body.lockscreen-sos-mode .module:not(#module-sos),
+body.lockscreen-sos-mode .auth-only-control {
+    display: none !important;
+}
+
+body:not(.lockscreen-sos-mode) #btnReturnToCalc {
+    display: none !important;
+}
+
 .card {
     background-color: var(--bg-card);
     border: 1px solid var(--border);
@@ -289,6 +301,11 @@ textarea, input[type="text"], input[type="number"], input[type="password"], sele
 .chip-btn:active {
     transform: scale(0.95);
     border-color: var(--danger);
+}
+
+.supp-archived {
+    opacity: 0.5;
+    border-style: dashed;
 }
 
 /* Breathing Animator */

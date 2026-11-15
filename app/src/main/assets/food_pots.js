@@ -107,7 +107,6 @@ const OfflineFoodParser = (() => {
                 aliases: d.aliases || []
             });
         }
-        // Include currently active pots so user can type "300г зеленой кастрюли" or "300г мясная"
         ["green", "white"].forEach(t => {
             const pot = AppState.activePots && AppState.activePots[t];
             if (pot) {
@@ -228,7 +227,7 @@ const OfflineFoodParser = (() => {
 })();
 
 window.autoParseFood = () => {
-    const text = document.getElementById("smartFoodInput").value.trim();
+    const text = (document.getElementById("smartFoodInput").value || "").trim();
     if (!text) return;
     const parsed = OfflineFoodParser.parseMealText(text);
     if (parsed.count > 0) {
@@ -240,10 +239,32 @@ window.autoParseFood = () => {
     }
 };
 
+// --- Optional Native Speech Recognizer (Zero RECORD_AUDIO manifest permission) ---
+window.initVoiceFoodButton = () => {
+    const btn = document.getElementById("btnVoiceFood");
+    if (!btn) return;
+    let supported = false;
+    if (window.AndroidBridge && window.AndroidBridge.canUseVoiceInput) {
+        try {
+            supported = Boolean(window.AndroidBridge.canUseVoiceInput());
+        } catch (_) {
+            supported = false;
+        }
+    } else {
+        supported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+    }
+    btn.style.display = supported ? "inline-flex" : "none";
+};
+
 window.startVoiceFood = () => {
+    if (!window.assertVaultUnlocked()) return;
+    if (window.AndroidBridge && window.AndroidBridge.startVoiceFoodAsync) {
+        window.AndroidBridge.startVoiceFoodAsync("onVoiceFoodResult");
+        return;
+    }
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRec) {
-        return showToast("Голосовой ввод не поддерживается в этом WebView");
+        return showToast("Голосовой ввод недоступен на этом устройстве (используй микрофон клавиатуры)");
     }
     const recognition = new SpeechRec();
     recognition.lang = "ru-RU";
@@ -254,17 +275,127 @@ window.startVoiceFood = () => {
         document.getElementById("smartFoodInput").value = transcript;
         window.autoParseFood();
     };
-    recognition.onerror = (event) => showToast("Ошибка микрофона: " + event.error);
+    recognition.onerror = (event) => showToast("Ошибка голоса: " + event.error);
     recognition.start();
     showToast("🎤 Говори...");
 };
 
-// --- Pot Builder (Мега-Варка) ---
+window.onVoiceFoodResult = (resStr) => {
+    try {
+        const res = JSON.parse(resStr);
+        if (res.ok && res.text) {
+            document.getElementById("smartFoodInput").value = res.text;
+            window.autoParseFood();
+            showToast("🎤 Распознано");
+        }
+    } catch (_) {}
+};
+
+// --- Native Compressed Food Photo Picker (1024px RGB_565 JPEG 80%) ---
+window.pickFoodPhoto = () => {
+    if (!window.assertVaultUnlocked()) return;
+    const keys = AppState.apiKeys || {};
+    if (!keys.visionKey && !keys.trainerKey) {
+        return showToast("Укажи Gemini Vision Key в ⚙️ Настройки!");
+    }
+    if (window.AndroidBridge && window.AndroidBridge.pickAndCompressFoodPhotoAsync) {
+        const statusEl = document.getElementById("foodImageStatus");
+        if (statusEl) statusEl.innerHTML = "<span class='text-muted'>📷 Выбор и сжатие фото...</span>";
+        window.AndroidBridge.pickAndCompressFoodPhotoAsync("onFoodPhotoPicked");
+    } else {
+        const inp = document.getElementById("foodVisionInput");
+        if (inp) inp.click();
+    }
+};
+
+window.onFoodPhotoPicked = (resStr) => {
+    const statusEl = document.getElementById("foodImageStatus");
+    try {
+        const res = JSON.parse(resStr);
+        if (res.cancelled) {
+            if (statusEl) statusEl.innerText = "";
+            return;
+        }
+        if (!res.ok || !res.base64) {
+            if (statusEl) statusEl.innerText = "❌ " + (res.error || "Ошибка фото");
+            return;
+        }
+        if (window.analyzeFoodImageBase64) {
+            window.analyzeFoodImageBase64(res.base64, res.mimeType || "image/jpeg");
+        }
+    } catch (_) {
+        if (statusEl) statusEl.innerText = "❌ Ошибка обработки фото";
+    }
+};
+
+window.analyzeFoodImageFallback = (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const keys = AppState.apiKeys || {};
+    if (!keys.visionKey && !keys.trainerKey) {
+        return showToast("Укажи Gemini Vision Key в ⚙️ Настройки!");
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const dataUrl = String(e.target.result || "");
+        const base64data = dataUrl.split(",")[1];
+        if (base64data && window.analyzeFoodImageBase64) {
+            window.analyzeFoodImageBase64(base64data, file.type || "image/jpeg");
+        }
+    };
+    reader.readAsDataURL(file);
+};
+
+// --- Pot Builder (Мега-Варка) with Event Delegation ---
 let currentPotType = "";
 let currentPotRows = [];
 let potRowCounter = 0;
 
+function bindPotEvents() {
+    const container = document.getElementById("potCalculator");
+    if (!container || container.dataset.delegated) return;
+    container.dataset.delegated = "1";
+
+    container.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-action]");
+        if (!btn) return;
+        const action = btn.dataset.action;
+        const type = btn.dataset.potType || currentPotType;
+
+        if (action === "eat-pot") window.eatActivePotGrams(type);
+        else if (action === "new-pot") window.startNewPot(type);
+        else if (action === "load-recipe") window.loadPotRecipe(type);
+        else if (action === "save-recipe") window.savePotRecipe(type);
+        else if (action === "remove-row") window.removePotRow(safeParseInt(btn.dataset.rowId, -1));
+        else if (action === "add-row") window.addPotRow();
+        else if (action === "open-custom-ing") window.openCustomIngredientModal();
+        else if (action === "apply-tare") window.applyTareToGross();
+        else if (action === "calc-pot") window.calcPot();
+    });
+
+    container.addEventListener("change", (e) => {
+        const sel = e.target.closest("[data-row-field='ingredientKey']");
+        if (sel) {
+            window.updatePotRow(safeParseInt(sel.dataset.rowId, -1), "ingredientKey", sel.value);
+        }
+    });
+
+    container.addEventListener("input", (e) => {
+        const gInp = e.target.closest("[data-row-field='grams']");
+        if (gInp) {
+            window.updatePotRow(safeParseInt(gInp.dataset.rowId, -1), "grams", gInp.value);
+            return;
+        }
+        const tareInp = e.target.closest("#potTareWeight");
+        if (tareInp) {
+            window.updatePotTare(currentPotType, tareInp.value);
+        }
+    });
+}
+
 window.openPotModal = (type) => {
+    bindPotEvents();
     currentPotType = type;
     const container = document.getElementById("potCalculator");
     container.style.display = "block";
@@ -276,6 +407,7 @@ window.openPotModal = (type) => {
 };
 
 window.renderActivePot = (type) => {
+    bindPotEvents();
     const container = document.getElementById("potCalculator");
     const pot = AppState.activePots[type];
     if (!pot) return window.startNewPot(type);
@@ -292,14 +424,15 @@ window.renderActivePot = (type) => {
             <p class="text-xs mb-1 font-bold">Сколько грамм ты сейчас съел?</p>
             <div class="flex gap-2">
                 <input type="number" id="eatenPotGramsActive" placeholder="Напр. 300" style="flex:1">
-                <button class="btn btn-primary btn-sm" style="width:auto;" onclick="eatActivePotGrams('${type}')">Съесть</button>
+                <button class="btn btn-primary btn-sm" style="width:auto;" data-action="eat-pot" data-pot-type="${escapeHtml(type)}">Съесть</button>
             </div>
-            <button class="btn btn-outline btn-sm mt-2 text-danger" onclick="startNewPot('${type}')">🗑 Сбросить и сварить новую</button>
+            <button class="btn btn-outline btn-sm mt-2 text-danger" data-action="new-pot" data-pot-type="${escapeHtml(type)}">🗑 Сбросить и сварить новую</button>
         </div>
     `;
 };
 
 window.startNewPot = (type) => {
+    bindPotEvents();
     currentPotType = type;
     currentPotRows = [];
     potRowCounter = 0;
@@ -332,6 +465,7 @@ window.updatePotRow = (id, field, value) => {
 };
 
 window.renderPotBuilder = () => {
+    bindPotEvents();
     const container = document.getElementById("potCalculator");
     const ingredients = window.getPotIngredients();
     const sortedKeys = Object.keys(ingredients).sort();
@@ -342,8 +476,8 @@ window.renderPotBuilder = () => {
                 ${currentPotType === "green" ? "🟢 Зеленая (3л)" : "🌼 Белая (2л)"}
             </h4>
             <div class="flex gap-1">
-                <button class="btn btn-outline btn-sm" style="width:auto;" onclick="loadPotRecipe('${currentPotType}')">📥 Загр.</button>
-                <button class="btn btn-outline btn-sm" style="width:auto;" onclick="savePotRecipe('${currentPotType}')">💾 Сохр.</button>
+                <button class="btn btn-outline btn-sm" style="width:auto;" data-action="load-recipe" data-pot-type="${escapeHtml(currentPotType)}">📥 Загр.</button>
+                <button class="btn btn-outline btn-sm" style="width:auto;" data-action="save-recipe" data-pot-type="${escapeHtml(currentPotType)}">💾 Сохр.</button>
             </div>
         </div>
         <div class="flex-col gap-2 mb-2">
@@ -355,12 +489,12 @@ window.renderPotBuilder = () => {
         ).join("");
         html += `
             <div class="flex gap-1 align-center">
-                <select style="flex:2" onchange="updatePotRow(${row.id}, 'ingredientKey', this.value)">
+                <select style="flex:2" data-row-id="${row.id}" data-row-field="ingredientKey">
                     <option value="" disabled ${!row.ingredientKey ? "selected" : ""}>Выбери...</option>
                     ${options}
                 </select>
-                <input type="number" style="flex:1" placeholder="г (сырой)" value="${row.grams}" oninput="updatePotRow(${row.id}, 'grams', this.value)">
-                <button class="btn btn-danger btn-sm" style="width:auto;" onclick="removePotRow(${row.id})">✖</button>
+                <input type="number" style="flex:1" placeholder="г (сырой)" value="${escapeHtml(row.grams)}" data-row-id="${row.id}" data-row-field="grams">
+                <button class="btn btn-danger btn-sm" style="width:auto;" data-action="remove-row" data-row-id="${row.id}">✖</button>
             </div>
         `;
     });
@@ -368,21 +502,21 @@ window.renderPotBuilder = () => {
     html += `
         </div>
         <div class="grid-2 gap-2 mb-2">
-            <button class="btn btn-outline btn-sm" onclick="addPotRow()">+ Ингредиент</button>
-            <button class="btn btn-outline btn-sm" onclick="openCustomIngredientModal()">⚙️ Свой продукт</button>
+            <button class="btn btn-outline btn-sm" data-action="add-row">+ Ингредиент</button>
+            <button class="btn btn-outline btn-sm" data-action="open-custom-ing">⚙️ Свой продукт</button>
         </div>
         <div class="card mb-2" style="border-style:dashed; padding:10px;">
             <p class="text-xs font-bold text-center mb-1">⚖️ Взвешивание готовой кастрюли</p>
             <div class="grid-2 gap-2 mb-2">
                 <div class="input-group">
                     <label>Пустая тара (г)</label>
-                    <input type="number" id="potTareWeight" value="${(AppState.potTare && AppState.potTare[currentPotType]) || 0}" oninput="updatePotTare('${currentPotType}', this.value)">
+                    <input type="number" id="potTareWeight" value="${(AppState.potTare && AppState.potTare[currentPotType]) || 0}">
                 </div>
                 <div class="input-group">
                     <label>Вес с едой (г)</label>
                     <div class="flex gap-1">
                         <input type="number" id="potGrossWeight" placeholder="2500" style="flex:1">
-                        <button class="btn btn-outline btn-sm" style="width:auto;" onclick="applyTareToGross()">- Тара</button>
+                        <button class="btn btn-outline btn-sm" style="width:auto;" data-action="apply-tare">- Тара</button>
                     </div>
                 </div>
             </div>
@@ -391,12 +525,13 @@ window.renderPotBuilder = () => {
                 <input type="number" id="potNetWeight" placeholder="Если пусто — возьмётся сырой вес">
             </div>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="calcPot()">🔥 Сварить кастрюлю</button>
+        <button class="btn btn-primary btn-sm" data-action="calc-pot">🔥 Сварить кастрюлю</button>
     `;
     container.innerHTML = html;
 };
 
 window.updatePotTare = (type, val) => {
+    if (!window.assertVaultUnlocked()) return;
     const v = safeParseInt(val, 0);
     if (v >= 0) {
         AppState.potTare[type] = v;
@@ -416,6 +551,7 @@ window.applyTareToGross = () => {
 };
 
 window.savePotRecipe = (type) => {
+    if (!window.assertVaultUnlocked()) return;
     const validRows = currentPotRows.filter(r => r.ingredientKey && r.grams);
     if (validRows.length === 0) return showToast("Нет ингредиентов для сохранения!");
     AppState.potRecipes[type] = validRows.map(r => ({ k: r.ingredientKey, g: r.grams }));
@@ -434,6 +570,7 @@ window.loadPotRecipe = (type) => {
 };
 
 window.openCustomIngredientModal = () => {
+    if (!window.assertVaultUnlocked()) return;
     window.openAppModal("⚙️ Новый продукт в базу", `
         <div class="flex-col gap-2">
             <input type="text" id="custIngName" placeholder="Название (напр: Индейка)">
@@ -451,6 +588,7 @@ window.openCustomIngredientModal = () => {
 };
 
 window.saveCustomIngredientFromModal = () => {
+    if (!window.assertVaultUnlocked()) return;
     const name = (document.getElementById("custIngName").value || "").trim().toLowerCase();
     const k = parseFloat(document.getElementById("custIngK").value);
     const b = parseFloat(document.getElementById("custIngB").value);
@@ -467,6 +605,7 @@ window.saveCustomIngredientFromModal = () => {
 };
 
 window.calcPot = () => {
+    if (!window.assertVaultUnlocked()) return;
     let b = 0, f = 0, u = 0, k = 0, rawWeight = 0;
     const ingredients = window.getPotIngredients();
 
@@ -510,6 +649,7 @@ window.calcPot = () => {
 };
 
 window.eatActivePotGrams = (type) => {
+    if (!window.assertVaultUnlocked()) return;
     const pot = AppState.activePots[type];
     if (!pot) return;
     const eaten = parseFloat(document.getElementById("eatenPotGramsActive").value);
@@ -542,3 +682,8 @@ window.eatActivePotGrams = (type) => {
     window.updateFoodUI();
     saveUIState();
 };
+
+document.addEventListener("DOMContentLoaded", () => {
+    bindPotEvents();
+    window.initVoiceFoodButton();
+});

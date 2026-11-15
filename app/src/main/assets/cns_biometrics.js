@@ -61,6 +61,7 @@ const CNSAnalytics = (() => {
         };
     }
 
+    // Strict paired filter: requires real sleep log + next-morning real PVT (no imputation)
     function buildDailyRecords() {
         const byDay = {};
         const ensure = (day) => {
@@ -196,6 +197,40 @@ const CNSAnalytics = (() => {
     return { median, mad, discoverTriggers };
 })();
 
+// --- Offline WebAudio 432Hz Gentle Chime (Zero MP3 assets) ---
+let tankAudioCtx = null;
+
+function unlockAudioCtx() {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return null;
+        if (!tankAudioCtx) tankAudioCtx = new AudioCtx();
+        if (tankAudioCtx.state === "suspended") tankAudioCtx.resume();
+        return tankAudioCtx;
+    } catch (_) {
+        return null;
+    }
+}
+
+function playGentleChime432() {
+    try {
+        const ctx = unlockAudioCtx();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(432, now);
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.exponentialRampToValueAtTime(0.18, now + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.5);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 1.55);
+    } catch (_) {}
+}
+
 window.getActiveCaffeineMg = () => {
     let active = 0;
     const now = Date.now();
@@ -214,7 +249,6 @@ window.calculateRecoveryScore = () => {
     const cutoff24 = now - 24 * 60 * 60 * 1000;
     const today = window.todayKey();
 
-    // Sleep recovery (saturating exponential + caffeine damper)
     const recentSleep = (AppState.sleepLogs || []).filter(s => s.ts ? s.ts >= cutoff24 : s.date === today);
     let bb = 65;
     if (recentSleep.length > 0) {
@@ -240,9 +274,10 @@ window.calculateRecoveryScore = () => {
     bb -= workoutCount * 12;
     bb += recoveryCount * 15;
 
-    // PVT Z-score calibration if baseline >= 3 series
+    // PVT Z-score calibration: apply ONLY if today has a PVT measurement, else neutral Z = 0
     const pvtHist = AppState.pvtHistory || [];
-    if (pvtHist.length >= 3) {
+    const hasTodayPvt = pvtHist.some(p => p.date === today);
+    if (pvtHist.length >= 3 && hasTodayPvt) {
         const medians = pvtHist.map(p => p.medianMs);
         const latest = medians[medians.length - 1];
         const baseMed = CNSAnalytics.median(medians.slice(0, -1));
@@ -257,6 +292,7 @@ window.calculateRecoveryScore = () => {
     AppState.bodyBattery = bb;
     window.updateBodyBatteryUI();
     window.updateWorkoutUI();
+    window.updatePvtBaselineUI();
     return bb;
 };
 
@@ -288,16 +324,30 @@ window.updateBodyBatteryUI = () => {
     }
 };
 
+// --- Event-Delegated Stress Trigger Chips ---
+function bindTriggerChipsDelegation() {
+    const box = document.getElementById("cnsTriggerChips");
+    if (!box || box.dataset.delegated) return;
+    box.dataset.delegated = "1";
+    box.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-trigger]");
+        if (!btn) return;
+        window.logStressTrigger(btn.dataset.trigger);
+    });
+}
+
 window.renderTriggerChips = () => {
+    bindTriggerChipsDelegation();
     const box = document.getElementById("cnsTriggerChips");
     if (!box) return;
     const triggers = AppState.cnsTriggers || ["Дроны", "Тревога", "Новости", "Недосып", "Тяж. тренировка"];
     box.innerHTML = triggers.map(t =>
-        `<button class="chip-btn" onclick="logStressTrigger('${escapeHtml(t)}')">⚡ ${escapeHtml(t)}</button>`
+        `<button class="chip-btn" data-trigger="${escapeHtml(t)}">⚡ ${escapeHtml(t)}</button>`
     ).join("");
 };
 
 window.logStressTrigger = (trigger) => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(40);
     window.logEvent("stress", { trigger });
     window.calculateRecoveryScore();
@@ -307,6 +357,7 @@ window.logStressTrigger = (trigger) => {
 
 // --- Sleep & Real CNS 14-day Canvas Chart ---
 window.logSleep = () => {
+    if (!window.assertVaultUnlocked()) return;
     const hrs = parseFloat(document.getElementById("sleepHours").value);
     const quality = safeParseInt(document.getElementById("sleepQuality").value, 4);
     const note = (document.getElementById("sleepNote").value || "").trim();
@@ -326,6 +377,7 @@ window.logSleep = () => {
 };
 
 window.logCnsRecovery = () => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(30);
     window.logEvent("cns_recovery", { method: "manual_nsdr_rest" });
     const bb = window.calculateRecoveryScore();
@@ -432,7 +484,7 @@ window.renderCnsInsights = () => {
     `).join("");
 };
 
-// --- Heatmap & Workouts (Auto-Deload + Isometric Timers) ---
+// --- Heatmap & Workouts (Auto-Deload + Drift-Free Isometric Timers) ---
 window.renderHeatmap = () => {
     const grid = document.getElementById("heatmapGrid");
     if (!grid) return;
@@ -483,41 +535,47 @@ window.updateWorkoutUI = () => {
 };
 
 let isoTimerInterval = null;
-let currentIsoSeconds = 0;
+let isoEndAt = 0;
 
 window.startIsoTimer = (seconds, type) => {
     window.haptic(30);
+    unlockAudioCtx();
     clearInterval(isoTimerInterval);
-    currentIsoSeconds = seconds;
+    isoEndAt = Date.now() + seconds * 1000;
     const display = document.getElementById("isoTimerDisplay");
-    if (display) display.innerText = `00:${String(currentIsoSeconds).padStart(2, "0")}`;
+    if (display) display.innerText = `00:${String(seconds).padStart(2, "0")}`;
 
     isoTimerInterval = setInterval(() => {
-        currentIsoSeconds--;
-        if (display) display.innerText = `00:${String(Math.max(0, currentIsoSeconds)).padStart(2, "0")}`;
-        if (currentIsoSeconds <= 0) {
+        const remSec = Math.max(0, Math.ceil((isoEndAt - Date.now()) / 1000));
+        if (display) display.innerText = `00:${String(remSec).padStart(2, "0")}`;
+        if (remSec <= 0) {
             clearInterval(isoTimerInterval);
+            isoTimerInterval = null;
             window.haptic([80, 60, 120]);
-            window.logEvent("isometric_done", { type, expected: seconds });
+            playGentleChime432();
+            if (VaultSession.unlocked) window.logEvent("isometric_done", { type, expected: seconds });
             showToast("🔥 Изометрия завершена!");
         }
-    }, 1000);
+    }, 250);
 };
 
 window.stopIsoTimer = () => {
     window.haptic(25);
     clearInterval(isoTimerInterval);
+    isoTimerInterval = null;
     const display = document.getElementById("isoTimerDisplay");
     if (display) display.innerText = "00:00";
 };
 
 window.addRep = (intensity = "normal") => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(30);
     window.logEvent("isometric_rep", { intensity });
     showToast("✅ Подход записан!");
 };
 
 window.completeWorkout = () => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(60);
     const today = window.todayKey();
     if (!AppState.workoutDays.includes(today)) {
@@ -530,8 +588,8 @@ window.completeWorkout = () => {
     showToast("🏋️ Тренировка закрыта и отмечена в календаре!");
 };
 
-// --- PVT Reaction Test (performance.now + pointerdown, 5-trial series) ---
-let pvtState = "idle"; // idle | waiting | ready
+// --- PVT Reaction Test (rAF Vblank Calibration + event.timeStamp + pointerdown) ---
+let pvtState = "idle"; // idle | waiting | arming | ready
 let pvtTimeout = null;
 let pvtStartPerf = 0;
 let pvtTrials = [];
@@ -540,12 +598,13 @@ function bindPvtButton() {
     const btn = document.getElementById("pvtButton");
     if (!btn || btn.dataset.bound) return;
     btn.dataset.bound = "1";
-    btn.addEventListener("pointerdown", () => {
-        window.handlePvtPress();
+    btn.addEventListener("pointerdown", (e) => {
+        window.handlePvtPress(e);
     }, { passive: true });
 }
 
-window.handlePvtPress = () => {
+window.handlePvtPress = (event) => {
+    if (!window.assertVaultUnlocked()) return;
     const btn = document.getElementById("pvtButton");
     const prog = document.getElementById("pvtProgress");
     const resEl = document.getElementById("hrvResult");
@@ -556,6 +615,8 @@ window.handlePvtPress = () => {
         startNextPvtTrial(btn, prog);
         return;
     }
+
+    if (pvtState === "arming") return;
 
     if (pvtState === "waiting") {
         clearTimeout(pvtTimeout);
@@ -568,7 +629,10 @@ window.handlePvtPress = () => {
     }
 
     if (pvtState === "ready") {
-        const rt = Math.round(performance.now() - pvtStartPerf);
+        const nowPerf = performance.now();
+        const rawTs = event && typeof event.timeStamp === "number" ? event.timeStamp : 0;
+        const pressPerf = (rawTs > 0 && Math.abs(nowPerf - rawTs) < 500) ? rawTs : nowPerf;
+        const rt = Math.max(1, Math.round(pressPerf - pvtStartPerf));
         pvtTrials.push(rt);
         window.haptic(25);
 
@@ -577,9 +641,10 @@ window.handlePvtPress = () => {
         } else {
             pvtState = "idle";
             const medianMs = Math.round(CNSAnalytics.median(pvtTrials));
+            const madMs = Math.round(CNSAnalytics.mad(pvtTrials));
             const lapses = pvtTrials.filter(x => x > 500).length;
-            AppState.pvtHistory.push({ date: window.todayKey(), ts: Date.now(), medianMs, lapses, trials: pvtTrials });
-            window.logEvent("pvt_series", { medianMs, lapses, trials: pvtTrials });
+            AppState.pvtHistory.push({ date: window.todayKey(), ts: Date.now(), medianMs, madMs, lapses, trials: pvtTrials });
+            window.logEvent("pvt_series", { medianMs, madMs, lapses, trials: pvtTrials });
             window.calculateRecoveryScore();
             window.updatePvtBaselineUI();
             saveUIState();
@@ -590,7 +655,7 @@ window.handlePvtPress = () => {
 
             resEl.style.display = "block";
             resEl.innerHTML = `
-                <div class="font-bold text-primary">Медиана RT: ${medianMs} мс</div>
+                <div class="font-bold text-primary">Медиана RT: ${medianMs} мс (MAD: ${madMs} мс)</div>
                 <div class="text-xs text-muted mt-1">Замеры: ${pvtTrials.join(" / ")} мс</div>
                 <div class="text-xs ${lapses > 0 ? "text-danger" : "text-success"} mt-1">
                     ${lapses > 0 ? `⚠️ Провалы внимания (>500 мс): ${lapses}` : "✅ Провалов нет, ЦНС в фокусе"}
@@ -608,10 +673,14 @@ function startNextPvtTrial(btn, prog) {
 
     const delay = Math.floor(Math.random() * 3500) + 1500;
     pvtTimeout = setTimeout(() => {
-        pvtState = "ready";
-        pvtStartPerf = performance.now();
+        pvtState = "arming";
         btn.innerText = "ЖМИ!!!";
         btn.className = "btn btn-danger";
+        requestAnimationFrame((frameTimestamp) => {
+            if (pvtState !== "arming") return;
+            pvtStartPerf = (typeof frameTimestamp === "number" && frameTimestamp > 0) ? frameTimestamp : performance.now();
+            pvtState = "ready";
+        });
     }, delay);
 }
 
@@ -619,19 +688,24 @@ window.updatePvtBaselineUI = () => {
     const el = document.getElementById("pvtBaselineInfo");
     if (!el) return;
     const hist = AppState.pvtHistory || [];
+    const today = window.todayKey();
+    const hasTodayPvt = hist.some(h => h.date === today);
+
     if (hist.length < 3) {
         el.innerText = `Серий собрано: ${hist.length}/3 для расчёта личного baseline.`;
     } else {
         const med = Math.round(CNSAnalytics.median(hist.map(h => h.medianMs)));
-        el.innerText = `Личный baseline (медиана по ${hist.length} сериям): ${med} мс`;
+        el.innerText = hasTodayPvt
+            ? `Личный baseline (медиана по ${hist.length} сериям): ${med} мс`
+            : `Baseline: ${med} мс (${hist.length} сер.) · Сегодня PVT не пройден (точность ЦНС снижена, Z=0)`;
     }
 };
 
-// --- Caffeine & Supplements ---
+// --- Caffeine & Supplements (suppMeta + Archive + Event Delegation) ---
 window.addCaffeine = (mg) => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(30);
     AppState.caffeineDoses.push({ amount: mg, time: Date.now() });
-    // Keep only last 48h
     const cutoff = Date.now() - 48 * 60 * 60 * 1000;
     AppState.caffeineDoses = AppState.caffeineDoses.filter(d => d.time >= cutoff);
     window.logEvent("caffeine", { mg });
@@ -651,42 +725,66 @@ window.updateCaffeineUI = () => {
     if (warn) warn.style.display = total > 200 ? "block" : "none";
 };
 
+function bindSuppsContainerDelegation(el) {
+    if (!el || el.dataset.delegated) return;
+    el.dataset.delegated = "1";
+    el.addEventListener("change", (e) => {
+        const cb = e.target.closest("input[data-supp-id]");
+        if (!cb) return;
+        window.toggleSupp(cb.dataset.suppId, cb.checked);
+    });
+}
+
 window.renderSupps = () => {
     const container = document.getElementById("suppsContainer");
     const quick = document.getElementById("quickSuppsList");
+    bindSuppsContainerDelegation(container);
+    bindSuppsContainerDelegation(quick);
+
     const meta = AppState.suppMeta || window.DEFAULT_SUPP_META;
+    const showArchived = Boolean(document.getElementById("showArchivedSuppsToggle")?.checked);
 
-    const buildRows = (prefix) => Object.keys(meta).map(key => {
-        const isChecked = Boolean(AppState.supps[key]);
-        const stock = AppState.suppsInventory[key] ?? 0;
-        const lotInfo = meta[key].lot ? ` <span class="text-xs text-muted">(${escapeHtml(meta[key].lot)})</span>` : "";
-        const stockHtml = stock < 10
-            ? `<span class="text-danger font-bold text-xs"> (${stock} шт)</span>`
-            : `<span class="text-muted text-xs"> (${stock} шт)</span>`;
+    const buildRows = (prefix, includeArchived) => Object.keys(meta)
+        .filter(key => includeArchived || !meta[key].archived)
+        .map(key => {
+            const item = meta[key];
+            const isChecked = Boolean(AppState.supps[key]);
+            const stock = AppState.suppsInventory[key] ?? 0;
+            const lotInfo = item.lot ? ` <span class="text-xs text-muted">(${escapeHtml(item.lot)})</span>` : "";
+            const archBadge = item.archived ? ` <span class="badge-pill">архив</span>` : "";
+            const stockHtml = stock < 10
+                ? `<span class="text-danger font-bold text-xs"> (${stock} шт)</span>`
+                : `<span class="text-muted text-xs"> (${stock} шт)</span>`;
+            const archClass = item.archived ? " supp-archived" : "";
 
-        return `
-            <div class="card bg-gray flex gap-2 align-center" style="padding:10px; opacity:${isChecked ? 0.55 : 1};">
-                <input type="checkbox" id="${prefix}_${key}" class="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSupp('${key}', this.checked)">
-                <label for="${prefix}_${key}" style="flex:1; cursor:pointer; font-size:13px;">${escapeHtml(meta[key].label)}${lotInfo}${stockHtml}</label>
-            </div>
-        `;
-    }).join("");
+            return `
+                <div class="card bg-gray flex gap-2 align-center${archClass}" style="padding:10px; opacity:${isChecked ? 0.55 : (item.archived ? 0.5 : 1)};">
+                    <input type="checkbox" id="${prefix}_${escapeHtml(key)}" class="checkbox" data-supp-id="${escapeHtml(key)}" ${isChecked ? "checked" : ""}>
+                    <label for="${prefix}_${escapeHtml(key)}" style="flex:1; cursor:pointer; font-size:13px;">${escapeHtml(item.label)}${lotInfo}${stockHtml}${archBadge}</label>
+                </div>
+            `;
+        }).join("") || "<p class='text-xs text-muted'>Нет активных добавок. Нажми ➕ БАД или включи архив.</p>";
 
-    if (container) container.innerHTML = buildRows("supp");
-    if (quick) quick.innerHTML = buildRows("qsupp");
+    if (container) container.innerHTML = buildRows("supp", showArchived);
+    if (quick) quick.innerHTML = buildRows("qsupp", false);
 };
 
 window.toggleSupp = (key, checkedState) => {
+    if (!window.assertVaultUnlocked()) {
+        window.renderSupps();
+        return;
+    }
     window.haptic(30);
     if (checkedState) {
         if ((AppState.suppsInventory[key] || 0) <= 0) {
-            showToast("❌ Банка пуста! Пополни остатки в разделе Фарма.");
+            showToast("❌ Банка пуста! Пополни остатки или скрой в ⚙️ Банки.");
             window.renderSupps();
             return;
         }
         AppState.supps[key] = true;
         AppState.suppsInventory[key] -= 1;
-        window.logEvent("supp_taken", { key, remaining: AppState.suppsInventory[key] });
+        const label = AppState.suppMeta?.[key]?.label || key;
+        window.logEvent("supp_taken", { key, label, remaining: AppState.suppsInventory[key] });
         if (AppState.suppsInventory[key] < 10) {
             showToast(`⚠️ Осталось мало: ${AppState.suppsInventory[key]} шт`);
         }
@@ -698,39 +796,140 @@ window.toggleSupp = (key, checkedState) => {
     window.renderSupps();
 };
 
-window.openSuppsInventoryModal = () => {
-    const meta = AppState.suppMeta || window.DEFAULT_SUPP_META;
-    const rows = Object.keys(meta).map(key => `
-        <div class="card bg-dark mb-1" style="padding:8px;">
-            <div class="text-xs font-bold mb-1">${escapeHtml(meta[key].label)}</div>
-            <div class="grid-2 gap-1">
-                <input type="number" id="inv_qty_${key}" value="${AppState.suppsInventory[key] ?? 0}" placeholder="Кол-во">
-                <input type="text" id="inv_lot_${key}" value="${escapeHtml(meta[key].lot || "")}" placeholder="Срок / серия (опц.)">
+window.openAddSupplementModal = () => {
+    if (!window.assertVaultUnlocked()) return;
+    window.openAppModal("➕ Новая добавка в стек", `
+        <div class="flex-col gap-2">
+            <div class="input-group">
+                <label>Название и дозировка</label>
+                <input type="text" id="newSuppName" placeholder="Напр: Цинк пиколинат 25mg">
             </div>
+            <div class="grid-2 gap-2">
+                <div class="input-group">
+                    <label>Количество (шт)</label>
+                    <input type="number" id="newSuppStock" value="30">
+                </div>
+                <div class="input-group">
+                    <label>Серия / Срок (опц.)</label>
+                    <input type="text" id="newSuppLot" placeholder="до 10.2027">
+                </div>
+            </div>
+            <button class="btn btn-success mt-1" onclick="saveNewSupplementFromModal()">✅ Добавить в стек</button>
         </div>
-    `).join("");
-
-    window.openAppModal("⚙️ Остатки и сроки БАДов", `
-        <div class="flex-col gap-1">${rows}</div>
-        <button class="btn btn-success mt-2" onclick="saveSuppsInventoryModal()">💾 Сохранить банки</button>
     `);
 };
 
-window.saveSuppsInventoryModal = () => {
+window.saveNewSupplementFromModal = () => {
+    if (!window.assertVaultUnlocked()) return;
+    const rawName = (document.getElementById("newSuppName").value || "").trim();
+    const stock = Math.max(0, safeParseInt(document.getElementById("newSuppStock").value, 30));
+    const lot = (document.getElementById("newSuppLot").value || "").trim();
+    if (!rawName) return showToast("Укажи название добавки!");
+
+    const id = "supp_" + Date.now().toString(36);
+    const label = /^[^\w\sа-яА-ЯёЁ]/.test(rawName) ? rawName : `💊 ${rawName}`;
+    AppState.suppMeta[id] = { id, label, lot, archived: false };
+    AppState.supps[id] = false;
+    AppState.suppsInventory[id] = stock;
+    window.logEvent("supp_added", { id, label, stock });
+    saveUIState();
+    window.closeAppModal();
+    window.renderSupps();
+    showToast(`✅ Добавлено: ${rawName}`);
+};
+
+window.toggleArchiveSupplementInModal = (key) => {
+    if (!window.assertVaultUnlocked()) return;
+    const item = AppState.suppMeta?.[key];
+    if (!item) return;
+    item.archived = !item.archived;
+    if (item.archived) AppState.supps[key] = false;
+    saveUIState();
+    window.renderSupps();
+    window.openSuppsInventoryModal();
+};
+
+window.openSuppsInventoryModal = () => {
+    if (!window.assertVaultUnlocked()) return;
     const meta = AppState.suppMeta || window.DEFAULT_SUPP_META;
-    Object.keys(meta).forEach(key => {
-        AppState.suppsInventory[key] = Math.max(0, safeParseInt(document.getElementById(`inv_qty_${key}`).value, 0));
-        meta[key].lot = (document.getElementById(`inv_lot_${key}`).value || "").trim();
-    });
+    const rows = Object.keys(meta).map(key => {
+        const item = meta[key];
+        const archText = item.archived ? "♻️ Вернуть" : "📦 В архив";
+        return `
+            <div class="card bg-dark mb-1" style="padding:8px;">
+                <div class="flex justify-between align-center mb-1 gap-1">
+                    <span class="text-xs font-bold">${escapeHtml(item.label)}</span>
+                    <button type="button" class="btn btn-outline btn-sm" style="width:auto; min-height:30px; padding:2px 8px;" data-action="toggle-archive-supp" data-supp-id="${escapeHtml(key)}">${archText}</button>
+                </div>
+                <div class="grid-2 gap-1">
+                    <input type="number" data-inv-qty="${escapeHtml(key)}" value="${AppState.suppsInventory[key] ?? 0}" placeholder="Кол-во">
+                    <input type="text" data-inv-lot="${escapeHtml(key)}" value="${escapeHtml(item.lot || "")}" placeholder="Срок / серия">
+                </div>
+            </div>
+        `;
+    }).join("");
+
+    window.openAppModal("⚙️ Остатки, сроки и архив БАДов", `
+        <div id="suppInventoryModalList" class="flex-col gap-1">${rows}</div>
+        <button class="btn btn-success mt-2" onclick="saveSuppsInventoryModal()">💾 Сохранить банки</button>
+    `);
+
+    const listEl = document.getElementById("suppInventoryModalList");
+    if (listEl) {
+        listEl.addEventListener("click", (e) => {
+            const btn = e.target.closest("[data-action='toggle-archive-supp']");
+            if (btn) window.toggleArchiveSupplementInModal(btn.dataset.suppId);
+        });
+    }
+};
+
+window.saveSuppsInventoryModal = () => {
+    if (!window.assertVaultUnlocked()) return;
+    const meta = AppState.suppMeta || window.DEFAULT_SUPP_META;
+    const modalBody = document.getElementById("appModalBody");
+    if (modalBody) {
+        modalBody.querySelectorAll("input[data-inv-qty]").forEach(inp => {
+            const k = inp.dataset.invQty;
+            AppState.suppsInventory[k] = Math.max(0, safeParseInt(inp.value, 0));
+        });
+        modalBody.querySelectorAll("input[data-inv-lot]").forEach(inp => {
+            const k = inp.dataset.invLot;
+            if (meta[k]) meta[k].lot = (inp.value || "").trim();
+        });
+    }
     saveUIState();
     window.closeAppModal();
     window.renderSupps();
     showToast("✅ Остатки БАДов обновлены!");
 };
 
-// --- SOS Protocols ---
+// --- SOS Protocols (Safe in Lockscreen Mode + Drift-Free NSDR + 432Hz Chime) ---
 let breathInterval = null;
 let nsdrInterval = null;
+let nsdrEndAt = 0;
+
+window.stopAllSosTimers = () => {
+    clearInterval(breathInterval);
+    breathInterval = null;
+    clearInterval(nsdrInterval);
+    nsdrInterval = null;
+    clearInterval(isoTimerInterval);
+    isoTimerInterval = null;
+
+    const circle = document.getElementById("breathSighCircle");
+    if (circle) {
+        circle.innerText = "ВЗДОХ";
+        circle.style.transform = "scale(1)";
+        circle.style.background = "var(--primary)";
+    }
+    const nsdr = document.getElementById("nsdrDisplay");
+    if (nsdr) {
+        nsdr.style.display = "none";
+        nsdr.innerText = "15:00";
+    }
+    const iso = document.getElementById("isoTimerDisplay");
+    if (iso) iso.innerText = "00:00";
+};
 
 window.showSosCategory = (category) => {
     window.haptic(30);
@@ -748,23 +947,25 @@ window.showSosCategory = (category) => {
         title.innerText = "🚨 ПАНИКА / ТРЕВОГА";
         title.className = "text-center text-danger";
         breath.style.display = "block";
-        window.logEvent("sos_trigger", { type: "panic" });
+        if (VaultSession.unlocked) window.logEvent("sos_trigger", { type: "panic" });
     } else if (category === "alcohol") {
         title.innerText = "🍺 АЛКОГОЛЬНЫЙ СРЫВ";
         title.className = "text-center text-warning";
         buttons.innerHTML = `
-            <button class="btn btn-outline btn-sm" onclick="addWater(500); showToast('💧 +500мл воды учтено + выпей Гавискон')">💧 Выпить 500мл воды + Гавискон</button>
-            <button class="btn btn-outline btn-sm" onclick="showToast('💊 Янтарная кислота 100мг + Магний 400мг')">💊 Янтарная кислота + Магний</button>
+            <p class="text-xs text-muted text-center">Протокол: 500 мл чистой воды + Гавискон + Янтарная кислота 100 мг + Магний глицинат 400 мг.</p>
+            <button class="btn btn-outline btn-sm auth-only-control" onclick="addWater(500); showToast('💧 +500мл воды учтено + выпей Гавискон')">💧 Записать +500мл воды в трекер</button>
+            <button class="btn btn-outline btn-sm" onclick="showToast('💊 Янтарная кислота 100мг + Магний 400мг')">💊 Напоминание по фарме</button>
         `;
-        window.logEvent("sos_trigger", { type: "alcohol" });
+        if (VaultSession.unlocked) window.logEvent("sos_trigger", { type: "alcohol" });
     } else if (category === "drugs") {
         title.innerText = "💊 ПАВ / ВОССТАНОВЛЕНИЕ";
         title.className = "text-center text-danger";
         buttons.innerHTML = `
-            <button class="btn btn-outline btn-sm" onclick="showToast('🍊 Витамин C 300мг + Магний глицинат + вода')">Сбить нагрузку (Вит C + Магний)</button>
-            <button class="btn btn-outline btn-sm" onclick="addWater(500)">💧 +500мл воды для детокса</button>
+            <p class="text-xs text-muted text-center">Протокол: Витамин C 300 мг + Магний глицинат 400 мг + вода маленькими глотками + тишина.</p>
+            <button class="btn btn-outline btn-sm" onclick="showToast('🍊 Витамин C 300мг + Магний глицинат + вода')">Сбить нагрузку (памятка)</button>
+            <button class="btn btn-outline btn-sm auth-only-control" onclick="addWater(500)">💧 Записать +500мл воды для детокса</button>
         `;
-        window.logEvent("sos_trigger", { type: "drugs" });
+        if (VaultSession.unlocked) window.logEvent("sos_trigger", { type: "drugs" });
     }
 };
 
@@ -796,6 +997,7 @@ window.startSighAnimation = () => {
 
 window.stopSighAnimation = () => {
     clearInterval(breathInterval);
+    breathInterval = null;
     const circle = document.getElementById("breathSighCircle");
     if (circle) {
         circle.innerText = "ВЗДОХ";
@@ -806,25 +1008,30 @@ window.stopSighAnimation = () => {
 
 window.startNSDR = () => {
     window.haptic(30);
+    unlockAudioCtx();
     const display = document.getElementById("nsdrDisplay");
     if (!display) return;
     display.style.display = "block";
-    let timeLeft = 15 * 60;
+    nsdrEndAt = Date.now() + 15 * 60 * 1000;
     clearInterval(nsdrInterval);
     display.innerText = "15:00";
+
     nsdrInterval = setInterval(() => {
-        timeLeft--;
+        const timeLeft = Math.max(0, Math.ceil((nsdrEndAt - Date.now()) / 1000));
         const m = Math.floor(timeLeft / 60);
         const s = timeLeft % 60;
         display.innerText = `${m}:${String(s).padStart(2, "0")}`;
         if (timeLeft <= 0) {
             clearInterval(nsdrInterval);
+            nsdrInterval = null;
             window.haptic([100, 80, 100]);
+            playGentleChime432();
             display.innerText = "ЗАВЕРШЕНО";
-            window.logCnsRecovery();
+            if (VaultSession.unlocked) window.logCnsRecovery();
         }
-    }, 1000);
-    window.logEvent("nsdr_started", {});
+    }, 250);
+
+    if (VaultSession.unlocked) window.logEvent("nsdr_started", {});
 };
 
 document.addEventListener("DOMContentLoaded", bindPvtButton);

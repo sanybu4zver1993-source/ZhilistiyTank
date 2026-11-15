@@ -6,20 +6,25 @@
     <title>Жилистый Танк</title>
     <link rel="stylesheet" href="style.css">
     <script>
-        // Anti-forensics: strip noisy logs when running inside packaged WebView origin
         if (location.hostname === 'appassets.androidplatform.net' || location.protocol === 'file:') {
             window.console.log = function () {};
             window.console.warn = function () {};
             window.console.info = function () {};
         }
 
-        // Fail-closed lock on visibility hidden / app backgrounding
         window.lockToStealth = function () {
-            if (window.flushVaultNow) window.flushVaultNow();
+            if (window.flushVaultNow && window.VaultSession && window.VaultSession.unlocked) {
+                window.flushVaultNow();
+            }
             if (window.VaultSession) {
                 window.VaultSession.unlocked = false;
-                window.VaultSession.pin = "";
+                window.VaultSession.slot = 0;
             }
+            if (window.AndroidBridge && window.AndroidBridge.lockVaultSessionNow) {
+                window.AndroidBridge.lockVaultSessionNow();
+            }
+            if (window.stopAllSosTimers) window.stopAllSosTimers();
+            document.body.classList.remove('lockscreen-sos-mode');
             if (window.closeAppModal) window.closeAppModal();
             if (window.wipeRuntimeSensitiveDom) window.wipeRuntimeSensitiveDom();
             const overlay = document.getElementById('loginOverlay');
@@ -31,7 +36,7 @@
         };
 
         document.addEventListener('visibilitychange', function () {
-            if (document.hidden) {
+            if (document.hidden && !(window.AndroidBridge && window.AndroidBridge.hasActiveVaultSession)) {
                 window.onAppBackgrounded();
             }
         });
@@ -41,23 +46,15 @@
 
     <!-- STEALTH CALCULATOR & VAULT SETUP OVERLAY -->
     <div id="loginOverlay" class="overlay-screen">
-        <!-- First-Run Dual-PIN Vault Setup -->
+        <!-- Simplified Single-PIN First-Run Setup -->
         <div id="vaultSetupContainer" style="display:none; flex-direction:column; width:100%; max-width:340px;" class="card gap-2">
             <h2 class="text-primary text-center mb-1">🔐 Создание Крипто-Сейфа</h2>
             <p class="text-xs text-muted text-center mb-1">
-                AES-256-GCM + TrustZone TEE. Задайте формулы/PIN для калькулятора (например: 1993+1961 и 2+2).
+                AES-256-GCM + TrustZone TEE. Задай PIN или формулу для калькулятора (от 4 символов, например: 4815 или 1993+1961).
             </p>
             <div class="input-group">
-                <label>Реальный PIN (основная база)</label>
-                <input type="text" id="setupRealPin" placeholder="Напр: 1993+1961" autocomplete="off">
-            </div>
-            <div class="input-group">
-                <label>Фейковый PIN (ложная база Decoy)</label>
-                <input type="text" id="setupDecoyPin" placeholder="Напр: 2+2" autocomplete="off">
-            </div>
-            <div class="input-group">
-                <label>Panic Wipe PIN (мгновенный крипто-шреддинг, опц.)</label>
-                <input type="text" id="setupPanicPin" placeholder="Напр: 911*0" autocomplete="off">
+                <label>PIN-код доступа</label>
+                <input type="text" id="setupRealPin" placeholder="Напр: 4815 или 1993+1961" autocomplete="off">
             </div>
             <button id="btnInitVault" class="btn btn-success mt-1" onclick="completeVaultSetup()">Создать и войти</button>
         </div>
@@ -92,7 +89,7 @@
         </div>
     </div>
 
-    <!-- UNIVERSAL IN-DOM MODAL (replaces prompt) -->
+    <!-- UNIVERSAL IN-DOM MODAL -->
     <div id="appModal" class="modal-backdrop">
         <div class="modal-box">
             <div class="flex justify-between align-center mb-2">
@@ -134,7 +131,7 @@
 
             <div id="modulesContainer">
 
-                <!-- 1. ГЛАВНАЯ (DASHBOARD) -->
+                <!-- 1. ГЛАВНАЯ -->
                 <div id="module-dashboard" class="module active">
                     <h2>🎛 Оперативная сводка</h2>
 
@@ -143,7 +140,7 @@
                             <h3 style="margin:0;">🚨 Воздушная тревога</h3>
                             <button class="btn btn-outline btn-sm" style="width:auto;" onclick="refreshAirAlerts(true)">🔄 Обновить</button>
                         </div>
-                        <p id="airAlertDetail" class="text-sm text-muted">Проверка статуса по Черниговской области...</p>
+                        <p id="airAlertDetail" class="text-sm text-muted">Проверка статуса по г. Чернигов...</p>
                     </div>
 
                     <div class="card mb-2">
@@ -168,7 +165,7 @@
                 <!-- 2. ДОСЬЕ -->
                 <div id="module-dossier" class="module">
                     <h2>🗃 Личное Досье</h2>
-                    <button class="btn btn-outline mb-2" style="border-color:#9b59b6; color:#c39bd3;" onclick="exportMedicalReportTxt()">📄 Вивантажити мед. звіт (.txt)</button>
+                    <button class="btn btn-outline mb-2" style="border-color:#9b59b6; color:#c39bd3;" onclick="exportMedicalReportTxt()">📄 Выгрузить мед. отчёт (.txt)</button>
                     <div class="card flex-col gap-2">
                         <p class="text-muted text-xs">Данные шифруются в Vault. Используются для БЖУ, мед-отчёта и ИИ-тренера.</p>
 
@@ -221,16 +218,15 @@
                         </div>
 
                         <div class="input-group">
-                            <label>Регион радара тревог (точно как в alerts API)</label>
-                            <select id="dossierRegion" onchange="saveDossier(); refreshAirAlerts(true);">
-                                <option value="Чернігівська область">Чернігівська область</option>
-                                <option value="м. Київ">м. Київ</option>
-                                <option value="Київська область">Київська область</option>
-                                <option value="Сумська область">Сумська область</option>
-                                <option value="Харківська область">Харківська область</option>
-                                <option value="Дніпропетровська область">Дніпропетровська область</option>
-                                <option value="Одеська область">Одеська область</option>
-                                <option value="Львівська область">Львівська область</option>
+                            <label>Город / Регион радара и погоды</label>
+                            <select id="dossierRegion" onchange="saveDossier(); refreshAirAlerts(true); refreshWeather(true);">
+                                <option value="Чернигов">Чернигов</option>
+                                <option value="Киев">Киев</option>
+                                <option value="Сумы">Сумы</option>
+                                <option value="Харьков">Харьков</option>
+                                <option value="Днепр">Днепр</option>
+                                <option value="Одесса">Одесса</option>
+                                <option value="Львов">Львов</option>
                             </select>
                         </div>
                     </div>
@@ -243,8 +239,8 @@
                         <div class="flex gap-2">
                             <textarea id="smartFoodInput" rows="2" placeholder="Напр: 200г гречки, 3 яйца, 30г медовой смеси" style="flex:1" oninput="autoParseFood()"></textarea>
                             <button class="btn btn-primary" style="width:auto; padding:0 14px;" id="btnVoiceFood" onclick="startVoiceFood()">🎤</button>
-                            <button class="btn btn-success" style="width:auto; padding:0 14px;" onclick="document.getElementById('foodVisionInput').click()">📷</button>
-                            <input type="file" id="foodVisionInput" accept="image/*" style="display:none" onchange="analyzeFoodImage(event)">
+                            <button class="btn btn-success" style="width:auto; padding:0 14px;" onclick="pickFoodPhoto()">📷</button>
+                            <input type="file" id="foodVisionInput" accept="image/*" style="display:none" onchange="analyzeFoodImageFallback(event)">
                         </div>
 
                         <div class="grid-2 gap-2">
@@ -313,7 +309,7 @@
                             <input type="number" id="customWaterInput" placeholder="Свой объём (мл)" style="flex:1;">
                             <button class="btn btn-primary" style="width:auto;" onclick="addCustomWater()">Добавить</button>
                         </div>
-                        <p id="waterTileSyncInfo" class="text-xs text-muted mt-1">Шторка QuickSettings (+250 мл) синхронизируется автоматически.</p>
+                        <p id="waterTileSyncInfo" class="text-xs text-muted mt-1">Шторка QuickSettings (+250 мл) синхронизируется по дате. Тихие часы: 22:30–08:30.</p>
                     </div>
                 </div>
 
@@ -353,7 +349,7 @@
 
                     <div class="card">
                         <h3>🧠 Инсайты (Spearman + FDR)</h3>
-                        <p class="text-xs text-muted mb-2">Без фантазий ИИ: только математически подтвержденные сдвиги PVT (мин. 14 дней).</p>
+                        <p class="text-xs text-muted mb-2">Без фантазий ИИ: только математически подтвержденные сдвиги PVT (мин. 14 парных дней).</p>
                         <div id="cnsInsightsList" class="flex-col gap-2 text-sm"></div>
                     </div>
                 </div>
@@ -381,7 +377,7 @@
                     </div>
 
                     <div id="workoutBlock3" class="card text-xs text-muted">
-                        Экран не гаснет во время тренировки (Wakelock активен). При Body Battery ≤ 20 автоматически включается щадящий режим DELOAD.
+                        Бездрейфовый таймер + мягкий звуковой гонг в конце. При Body Battery ≤ 20 автоматически включается режим DELOAD.
                     </div>
                 </div>
 
@@ -390,7 +386,7 @@
                     <h2>🧬 Биометрия ЦНС (PVT)</h2>
                     <div class="card flex-col gap-2 text-center">
                         <p class="text-sm text-muted">
-                            5 замеров на <code>pointerdown</code> + <code>performance.now()</code>. Жми мгновенно, когда кнопка станет красной.
+                            5 замеров с калибровкой по кадру (<code>rAF</code> + <code>pointerdown</code>). Жми мгновенно, когда кнопка станет красной.
                         </p>
                         <div id="pvtProgress" class="text-xs text-primary font-bold">Готов к серии (0 / 5)</div>
                         <button id="pvtButton" class="btn btn-primary" style="min-height:110px; font-size:20px;">⚡ Старт PVT Теста</button>
@@ -420,24 +416,31 @@
                     </div>
 
                     <div class="card flex-col gap-2">
-                        <div class="flex justify-between align-center">
+                        <div class="flex justify-between align-center gap-2">
                             <h3 style="margin:0;">💊 Ежедневный Стек</h3>
-                            <button class="btn btn-outline btn-sm" style="width:auto;" onclick="openSuppsInventoryModal()">⚙️ Остатки</button>
+                            <div class="flex gap-1">
+                                <button class="btn btn-outline btn-sm" style="width:auto;" onclick="openAddSupplementModal()">➕ БАД</button>
+                                <button class="btn btn-outline btn-sm" style="width:auto;" onclick="openSuppsInventoryModal()">⚙️ Банки</button>
+                            </div>
                         </div>
+                        <label class="flex align-center gap-2 text-xs text-muted" style="cursor:pointer;">
+                            <input type="checkbox" id="showArchivedSuppsToggle" class="checkbox" style="width:18px;height:18px;" onchange="renderSupps()">
+                            Показать скрытые / закончившиеся
+                        </label>
                         <div id="suppsContainer" class="flex-col gap-2"></div>
                     </div>
                 </div>
 
-                <!-- 9. ИИ-ТРЕНЕР (GEMINI HYDROGEN ONLY) -->
+                <!-- 9. ИИ-ТРЕНЕР -->
                 <div id="module-chat" class="module">
                     <div class="flex justify-between align-center mb-2">
                         <h2 style="margin:0;">💬 ИИ-Тренер</h2>
-                        <span id="chatModelBadge" class="badge-pill">gemini-4-hydrogen · HIGH</span>
+                        <span id="chatModelBadge" class="badge-pill">Модель не выбрана</span>
                     </div>
                     <button class="btn btn-outline btn-sm mb-2" onclick="generate14DayDigest()">📊 Сгенерировать отчёт за 14 дней</button>
-                    <div class="card flex-col gap-2" style="height: 56vh; display:flex; flex-direction:column;">
+                    <div class="card flex-col gap-2" style="height: 54vh; display:flex; flex-direction:column;">
                         <div id="chatHistory" style="flex:1; overflow-y:auto; background:#0d1117; padding:10px; border-radius:8px; display:flex; flex-direction:column; gap:10px;">
-                            <div class="text-muted text-sm text-center">Gemini 4 Hydrogen (режим HIGH) готов. Задай вопрос по питанию, сну или ЦНС.</div>
+                            <div class="text-muted text-sm text-center">Укажи свой Gemini API ключ и выбери модель в ⚙️ Настройки.</div>
                         </div>
                         <div class="flex gap-2">
                             <input type="text" id="chatInput" placeholder="Спроси тренера..." style="flex:1;">
@@ -472,7 +475,11 @@
 
                     <div class="card flex-col gap-2 text-center">
                         <h3>📲 Быстрый QR-Обмен</h3>
-                        <input type="text" id="qrInputText" placeholder="Текст или краткая сводка для QR (или оставь пустым для мед-карточки)">
+                        <input type="text" id="qrInputText" placeholder="Текст для QR (или пусто для экстренной мед-карты)">
+                        <label class="flex align-center gap-2 text-xs text-muted text-left" style="cursor:pointer;">
+                            <input type="checkbox" id="qrIncludeConditions" class="checkbox" style="width:18px;height:18px;">
+                            Включить хронические диагнозы в авто-QR
+                        </label>
                         <button class="btn btn-outline btn-sm" onclick="generateSummaryQR()">Сгенерировать QR</button>
                         <div id="qrOutput" class="flex justify-center mt-1" style="background:#fff; padding:10px; border-radius:8px; display:none;"></div>
                     </div>
@@ -481,26 +488,25 @@
                 <!-- 11. НАСТРОЙКИ -->
                 <div id="module-settings" class="module">
                     <h2>⚙️ Настройки и Безопасность</h2>
+
                     <div class="card flex-col gap-2 mb-2">
-                        <h3>Google Gemini API (без Groq)</h3>
+                        <h3>🤖 Google Gemini (Ключи и Модели)</h3>
+                        <p class="text-xs text-muted">Ключи хранятся ТОЛЬКО в твоём локальном зашифрованном Vault (ничего не вшито в APK).</p>
+
                         <div class="input-group">
-                            <label>Ключ ИИ-Тренера (чат и 14-дн. анализ)</label>
-                            <input type="password" id="geminiTrainerKey" placeholder="AQ.Ab8RN6...">
-                        </div>
-                        <div class="input-group">
-                            <label>Ключ Фото-Vision (распознавание еды)</label>
-                            <input type="password" id="geminiVisionKey" placeholder="AQ.Ab8RN6...">
+                            <label>API ключ ИИ-Тренера (чат и анализ ЦНС)</label>
+                            <div class="flex gap-1">
+                                <input type="password" id="geminiTrainerKey" placeholder="AIza... или AQ..." style="flex:1;">
+                                <button class="btn btn-outline btn-sm" style="width:auto;" onclick="loadModelsForRole('trainer')">🔄 Модели</button>
+                            </div>
                         </div>
                         <div class="grid-2 gap-2">
                             <div class="input-group">
-                                <label>Модель Gemini</label>
-                                <select id="geminiModelSelect">
-                                    <option value="gemini-4-hydrogen">gemini-4-hydrogen (Реком.)</option>
-                                    <option value="gemini-2.5-flash">gemini-2.5-flash (Эконом)</option>
-                                </select>
+                                <label>Модель Тренера</label>
+                                <select id="trainerModelSelect"></select>
                             </div>
                             <div class="input-group">
-                                <label>Режим Thinking</label>
+                                <label>Thinking (Тренер)</label>
                                 <select id="geminiThinkingSelect">
                                     <option value="HIGH">HIGH (Оптимально)</option>
                                     <option value="MEDIUM">MEDIUM (Эконом)</option>
@@ -508,6 +514,28 @@
                                 </select>
                             </div>
                         </div>
+
+                        <hr class="border-gray" style="margin:6px 0;">
+
+                        <div class="input-group">
+                            <label>API ключ Фотографа / Vision (разбор фото еды)</label>
+                            <div class="flex gap-1">
+                                <input type="password" id="geminiVisionKey" placeholder="AIza... или AQ..." style="flex:1;">
+                                <button class="btn btn-outline btn-sm" style="width:auto;" onclick="loadModelsForRole('vision')">🔄 Модели</button>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label>Модель Фотографа (Vision)</label>
+                            <select id="visionModelSelect"></select>
+                        </div>
+
+                        <hr class="border-gray" style="margin:6px 0;">
+
+                        <div class="input-group">
+                            <label>Токен alerts.in.ua (опц., для точного статуса г. Чернигов)</label>
+                            <input type="password" id="alertsInUaToken" placeholder="Пусто = бесплатный радар по области">
+                        </div>
+
                         <button class="btn btn-primary" onclick="saveSettings()">💾 Сохранить API настройки</button>
                     </div>
 
@@ -517,22 +545,29 @@
                         <div class="grid-2 gap-2">
                             <button class="btn btn-outline btn-sm" onclick="openExactAlarmSettingsUI()">⏰ Право будильника</button>
                             <button class="btn btn-outline btn-sm" onclick="testNotificationBridge()">🔔 Тест пуша</button>
+                            <button class="btn btn-outline btn-sm" onclick="openBatteryOptimizationUI()">🔋 Без экономии АКБ</button>
+                            <button class="btn btn-outline btn-sm" onclick="openAutoStartUI()">🚀 Автозапуск HyperOS</button>
                         </div>
                     </div>
 
-                    <div class="card flex-col gap-2">
-                        <h3>🔐 Смена PIN-кодов Vault</h3>
-                        <input type="password" id="oldRealPin" placeholder="Текущий Реальный PIN">
-                        <input type="text" id="newRealPin" placeholder="Новый Реальный PIN">
-                        <input type="text" id="newDecoyPin" placeholder="Новый Фейковый PIN (Decoy)">
-                        <input type="text" id="newPanicPin" placeholder="Новый Panic Wipe PIN (опц.)">
-                        <button class="btn btn-outline btn-sm" onclick="changeVaultPinsUI()">Перешифровать Vault</button>
+                    <div class="card flex-col gap-2 mb-2">
+                        <h3>🔐 Изменить PIN-код доступа</h3>
+                        <input type="password" id="oldCurrentPin" placeholder="Текущий PIN">
+                        <input type="text" id="newCurrentPin" placeholder="Новый PIN (мин. 4 символа)">
+                        <button class="btn btn-outline btn-sm" onclick="changeCurrentSlotPinUI()">Обновить PIN-код</button>
                     </div>
+
+                    <p id="appVersionBadge" class="text-center text-xs text-muted mt-2" style="cursor:pointer; padding:6px;" onclick="handleVersionTap()">
+                        VeinyTank v4.2-release
+                    </p>
                 </div>
 
                 <!-- 12. SOS ПРОТОКОЛЫ -->
                 <div id="module-sos" class="module">
-                    <h2 class="text-danger">🆘 SOS Протоколы (100% Оффлайн)</h2>
+                    <div class="flex justify-between align-center mb-2">
+                        <h2 class="text-danger" style="margin:0;">🆘 SOS Протоколы (Оффлайн)</h2>
+                        <button id="btnReturnToCalc" class="btn btn-outline btn-sm" style="width:auto;" onclick="exitLockscreenSOS()">🔒 К калькулятору</button>
+                    </div>
                     <div class="grid-3 gap-2 mb-2">
                         <button class="btn btn-danger btn-sm" onclick="showSosCategory('panic')">🚨 Паника</button>
                         <button class="btn btn-warning btn-sm" onclick="showSosCategory('alcohol')">🍺 Срыв</button>

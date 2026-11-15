@@ -19,6 +19,13 @@ window.todayKey = () => {
     return `${y}-${m}-${day}`;
 };
 
+window.escapeHtml = (s) => String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
 window.showToast = (msg) => {
     const existing = document.getElementById("vtActiveToast");
     if (existing) existing.remove();
@@ -45,14 +52,16 @@ window.closeAppModal = () => {
 };
 
 window.DEFAULT_SUPP_META = {
-    omega: { label: "🐟 Omega-3 1000mg (Now Foods)", lot: "" },
-    multi: { label: "💊 Мультивитамины (Now Foods)", lot: "" },
-    d3: { label: "☀️ D3 + K2-MK7 5000IU", lot: "" },
-    b2: { label: "💊 Витамин B2 100mg", lot: "" },
-    c300: { label: "🍊 Витамин C 300mg", lot: "" },
-    gaviscon: { label: "💊 Гавискон 10ml", lot: "" },
-    mag: { label: "💊 Магний глицинат 400mg", lot: "" },
-    succinic: { label: "💊 Янтарная кислота 50mg", lot: "" }
+    mag: { id: "mag", label: "💊 Магний глицинат 400mg", lot: "", archived: false },
+    taurine: { id: "taurine", label: "⚡ Таурин 1000mg", lot: "", archived: false },
+    creatine: { id: "creatine", label: "🏋️ Креатин моногидрат 5г", lot: "", archived: false },
+    omega: { id: "omega", label: "🐟 Omega-3 1000mg", lot: "", archived: false },
+    d3: { id: "d3", label: "☀️ D3 + K2-MK7 5000IU", lot: "", archived: false },
+    multi: { id: "multi", label: "💊 Мультивитамины", lot: "", archived: false },
+    b2: { id: "b2", label: "💊 Витамин B2 100mg", lot: "", archived: false },
+    c300: { id: "c300", label: "🍊 Витамин C 300mg", lot: "", archived: false },
+    gaviscon: { id: "gaviscon", label: "💊 Гавискон 10ml", lot: "", archived: false },
+    succinic: { id: "succinic", label: "💊 Янтарная кислота 50mg", lot: "", archived: false }
 };
 
 function createDefaultState() {
@@ -60,8 +69,14 @@ function createDefaultState() {
         food: { totalB: 0, totalF: 0, totalU: 0, totalKcal: 0 },
         todayFoodItems: [],
         water: 0,
-        supps: { gaviscon: false, mag: false, succinic: false, omega: false, multi: false, d3: false, b2: false, c300: false },
-        suppsInventory: { omega: 30, multi: 30, d3: 30, b2: 30, c300: 30, mag: 30, gaviscon: 20, succinic: 30 },
+        supps: {
+            mag: false, taurine: false, creatine: false, omega: false, d3: false,
+            multi: false, b2: false, c300: false, gaviscon: false, succinic: false
+        },
+        suppsInventory: {
+            mag: 30, taurine: 60, creatine: 60, omega: 30, d3: 30,
+            multi: 30, b2: 30, c300: 30, gaviscon: 20, succinic: 30
+        },
         suppMeta: JSON.parse(JSON.stringify(window.DEFAULT_SUPP_META)),
         caffeineDoses: [],
         workoutDays: [],
@@ -80,13 +95,17 @@ function createDefaultState() {
             conditions: "",
             goal: "maintenance",
             waterNorm: 3000,
-            region: "Чернігівська область"
+            region: "Чернигов"
         },
         apiKeys: {
             trainerKey: "",
+            trainerModel: "gemini-4-hydrogen",
+            trainerModels: ["gemini-4-hydrogen", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
             visionKey: "",
-            geminiModel: "gemini-4-hydrogen",
-            thinkingLevel: "HIGH"
+            visionModel: "gemini-4-hydrogen",
+            visionModels: ["gemini-4-hydrogen", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+            thinkingLevel: "HIGH",
+            alertsInUaToken: ""
         },
         cnsTriggers: ["Дроны", "Тревога", "Новости", "Недосып", "Тяж. тренировка"],
         activePots: { green: null, white: null },
@@ -101,13 +120,20 @@ window.AppState = createDefaultState();
 
 window.VaultSession = {
     unlocked: false,
-    slot: 0,
-    pin: ""
+    slot: 0
 };
 
 let saveTimer = null;
 let alertPollInterval = null;
 let lastAirAlertActive = null;
+
+window.assertVaultUnlocked = () => {
+    if (!VaultSession.unlocked) {
+        showToast("🔒 Сейф заблокирован");
+        return false;
+    }
+    return true;
+};
 
 window.mergeStateWithDefaults = (rawObj) => {
     const def = createDefaultState();
@@ -115,9 +141,24 @@ window.mergeStateWithDefaults = (rawObj) => {
     merged.food = Object.assign({}, def.food, merged.food || {});
     merged.supps = Object.assign({}, def.supps, merged.supps || {});
     merged.suppsInventory = Object.assign({}, def.suppsInventory, merged.suppsInventory || {});
-    merged.suppMeta = Object.assign({}, def.suppMeta, merged.suppMeta || {});
+
+    const mergedMeta = Object.assign({}, def.suppMeta);
+    if (rawObj && rawObj.suppMeta) {
+        for (const k in rawObj.suppMeta) {
+            mergedMeta[k] = Object.assign(
+                { id: k, label: k, lot: "", archived: false },
+                mergedMeta[k] || {},
+                rawObj.suppMeta[k]
+            );
+        }
+    }
+    merged.suppMeta = mergedMeta;
+
     merged.dossier = Object.assign({}, def.dossier, merged.dossier || {});
+    if (merged.dossier.region === "Чернігівська область") merged.dossier.region = "Чернигов";
     merged.apiKeys = Object.assign({}, def.apiKeys, merged.apiKeys || {});
+    if (!Array.isArray(merged.apiKeys.trainerModels)) merged.apiKeys.trainerModels = def.apiKeys.trainerModels;
+    if (!Array.isArray(merged.apiKeys.visionModels)) merged.apiKeys.visionModels = def.apiKeys.visionModels;
     merged.activePots = Object.assign({}, def.activePots, merged.activePots || {});
     merged.potTare = Object.assign({}, def.potTare, merged.potTare || {});
     merged.potRecipes = Object.assign({}, def.potRecipes, merged.potRecipes || {});
@@ -131,18 +172,40 @@ window.mergeStateWithDefaults = (rawObj) => {
     return merged;
 };
 
-window.injectBuildConfigApiDefaults = () => {
-    try {
-        if (window.AndroidBridge && window.AndroidBridge.getDefaultApiConfig) {
-            const cfg = JSON.parse(window.AndroidBridge.getDefaultApiConfig());
-            if (!AppState.apiKeys.trainerKey && cfg.trainerKey && !cfg.trainerKey.startsWith("YOUR_")) {
-                AppState.apiKeys.trainerKey = cfg.trainerKey;
+window.compactAppState = () => {
+    const now = Date.now();
+    const cutoff180Ms = now - 180 * 24 * 60 * 60 * 1000;
+    const cutoff1100Ms = now - 1100 * 24 * 60 * 60 * 1000;
+    const d1100 = new Date(cutoff1100Ms);
+    const minDay1100 = `${d1100.getFullYear()}-${String(d1100.getMonth() + 1).padStart(2, "0")}-${String(d1100.getDate()).padStart(2, "0")}`;
+
+    if (Array.isArray(AppState.events)) {
+        AppState.events = AppState.events
+            .filter(e => !e.occurred_at || new Date(e.occurred_at).getTime() >= cutoff180Ms)
+            .slice(-3000);
+    }
+
+    if (Array.isArray(AppState.pvtHistory)) {
+        const recentPvt = [];
+        AppState.pvtHistory.forEach(p => {
+            if (!p.ts || p.ts >= cutoff180Ms) {
+                recentPvt.push(p);
+            } else if (p.date) {
+                AppState.dailyHistory[p.date] = Object.assign({}, AppState.dailyHistory[p.date] || {}, { pvtMedianMs: p.medianMs });
             }
-            if (!AppState.apiKeys.visionKey && cfg.visionKey && !cfg.visionKey.startsWith("YOUR_")) {
-                AppState.apiKeys.visionKey = cfg.visionKey;
-            }
-        }
-    } catch (_) {}
+        });
+        AppState.pvtHistory = recentPvt.slice(-500);
+    }
+
+    if (Array.isArray(AppState.sleepLogs)) {
+        AppState.sleepLogs = AppState.sleepLogs.filter(s => !s.date || s.date >= minDay1100).slice(-1100);
+    }
+
+    if (AppState.dailyHistory) {
+        Object.keys(AppState.dailyHistory).forEach(day => {
+            if (day < minDay1100) delete AppState.dailyHistory[day];
+        });
+    }
 };
 
 window.flushVaultNow = () => {
@@ -151,9 +214,10 @@ window.flushVaultNow = () => {
         clearTimeout(saveTimer);
         saveTimer = null;
     }
+    window.compactAppState();
     const payload = JSON.stringify(AppState);
-    if (window.AndroidBridge && window.AndroidBridge.saveVaultStateAsync && VaultSession.pin) {
-        window.AndroidBridge.saveVaultStateAsync(VaultSession.slot, VaultSession.pin, payload, "onVaultSaveAck");
+    if (window.AndroidBridge && window.AndroidBridge.saveVaultStateAsync) {
+        window.AndroidBridge.saveVaultStateAsync(payload, "onVaultSaveAck");
     } else {
         try {
             sessionStorage.setItem(`vt_fallback_slot_${VaultSession.slot}`, payload);
@@ -161,7 +225,14 @@ window.flushVaultNow = () => {
     }
 };
 
-window.onVaultSaveAck = () => {};
+window.onVaultSaveAck = (resStr) => {
+    try {
+        const res = JSON.parse(resStr);
+        if (res.status === "LOCKED") {
+            window.lockToStealth();
+        }
+    } catch (_) {}
+};
 
 window.saveUIState = () => {
     if (!VaultSession.unlocked) return;
@@ -178,26 +249,32 @@ window.addEventListener("pagehide", () => {
 window.checkDailyReset = () => {
     const today = window.todayKey();
     if (AppState.lastResetDate && AppState.lastResetDate !== today) {
-        AppState.dailyHistory[AppState.lastResetDate] = {
+        const prevDay = AppState.lastResetDate;
+        AppState.dailyHistory[prevDay] = Object.assign({}, AppState.dailyHistory[prevDay] || {}, {
             bb: AppState.bodyBattery,
-            water: AppState.water,
+            water: (AppState.dailyHistory[prevDay]?.water || 0) + (AppState.water || 0),
             kcal: AppState.food.totalKcal
-        };
+        });
         AppState.food = { totalB: 0, totalF: 0, totalU: 0, totalKcal: 0 };
         AppState.todayFoodItems = [];
         AppState.water = 0;
         for (const k in AppState.supps) AppState.supps[k] = false;
         AppState.lastResetDate = today;
+        window.compactAppState();
         saveUIState();
     }
 };
 
 window.hydrateAllUI = () => {
+    // 1. Drain native QuickSettings water events FIRST by exact event day
+    if (window.syncWaterFromNative) window.syncWaterFromNative();
+    // 2. Then run daily rollover so late-night tile events are never lost
     window.checkDailyReset();
-    window.injectBuildConfigApiDefaults();
+    if (window.syncWaterFromNative) window.syncWaterFromNative(true);
+
     if (window.loadDossierUI) window.loadDossierUI();
     if (window.updateFoodUI) window.updateFoodUI();
-    if (window.syncWaterFromNative) window.syncWaterFromNative();
+    if (window.initVoiceFoodButton) window.initVoiceFoodButton();
     if (window.renderTriggerChips) window.renderTriggerChips();
     if (window.renderSupps) window.renderSupps();
     if (window.updateCaffeineUI) window.updateCaffeineUI();
@@ -220,16 +297,23 @@ window.hydrateAllUI = () => {
 };
 
 window.wipeRuntimeSensitiveDom = () => {
-    const fields = ["foodName", "foodB", "foodF", "foodU", "foodKcal", "smartFoodInput", "chatInput", "steganoPassInput", "tankBackupPassInput", "oldRealPin", "newRealPin", "newDecoyPin", "newPanicPin"];
+    const fields = [
+        "foodName", "foodB", "foodF", "foodU", "foodKcal", "smartFoodInput",
+        "chatInput", "steganoPassInput", "tankBackupPassInput",
+        "oldCurrentPin", "newCurrentPin", "geminiTrainerKey", "geminiVisionKey", "alertsInUaToken"
+    ];
     fields.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = "";
     });
 };
 
+window.activeModuleId = "dashboard";
+
 window.showModule = (id) => {
     const target = document.getElementById(`module-${id}`);
     if (!target) return;
+    window.activeModuleId = id;
     document.querySelectorAll(".module").forEach(el => el.classList.remove("active"));
     target.classList.add("active");
     document.querySelectorAll(".nav-btn").forEach(btn => {
@@ -246,7 +330,33 @@ window.showModule = (id) => {
     }
 };
 
+window.handleHardwareBack = () => {
+    if (document.body.classList.contains("lockscreen-sos-mode")) {
+        if (window.exitLockscreenSOS) window.exitLockscreenSOS();
+        return "HANDLED";
+    }
+    if (!VaultSession.unlocked) {
+        return "MINIMIZE";
+    }
+    const modal = document.getElementById("appModal");
+    if (modal && modal.classList.contains("open")) {
+        window.closeAppModal();
+        return "HANDLED";
+    }
+    const potCalc = document.getElementById("potCalculator");
+    if (window.activeModuleId === "nutrition" && potCalc && potCalc.style.display !== "none") {
+        potCalc.style.display = "none";
+        return "HANDLED";
+    }
+    if (window.activeModuleId !== "dashboard") {
+        window.showModule("dashboard");
+        return "HANDLED";
+    }
+    return "MINIMIZE";
+};
+
 window.logEvent = (type, payload) => {
+    if (!VaultSession.unlocked) return;
     if (!AppState.events) AppState.events = [];
     AppState.events.push({
         id: "evt_" + Date.now() + "_" + Math.floor(Math.random() * 10000),
@@ -255,14 +365,15 @@ window.logEvent = (type, payload) => {
         day: window.todayKey(),
         payload: payload || {}
     });
-    if (AppState.events.length > 5000) {
-        AppState.events = AppState.events.slice(-5000);
+    if (AppState.events.length > 3500) {
+        window.compactAppState();
     }
     saveUIState();
 };
 
 // --- Dossier ---
 window.saveDossier = () => {
+    if (!window.assertVaultUnlocked()) return;
     AppState.dossier = {
         year: document.getElementById("dossierYear").value,
         blood: document.getElementById("dossierBlood").value,
@@ -272,10 +383,10 @@ window.saveDossier = () => {
         conditions: document.getElementById("dossierConditions").value,
         goal: document.getElementById("dossierGoal").value,
         waterNorm: Math.max(500, safeParseInt(document.getElementById("dossierWaterNorm").value, 3000)),
-        region: document.getElementById("dossierRegion").value || "Чернігівська область"
+        region: document.getElementById("dossierRegion").value || "Чернигов"
     };
     saveUIState();
-    window.syncWaterFromNative();
+    window.syncWaterFromNative(true);
     showToast("Досье сохранено!");
 };
 
@@ -289,24 +400,26 @@ window.loadDossierUI = () => {
     document.getElementById("dossierConditions").value = d.conditions || "";
     document.getElementById("dossierGoal").value = d.goal || "maintenance";
     document.getElementById("dossierWaterNorm").value = d.waterNorm || 3000;
-    document.getElementById("dossierRegion").value = d.region || "Чернігівська область";
+    document.getElementById("dossierRegion").value = d.region || "Чернигов";
 };
 
 // --- Water & Native Tile Sync ---
 window.getWaterNorm = () => (AppState.dossier && AppState.dossier.waterNorm) ? AppState.dossier.waterNorm : 3000;
 
 window.addWater = (ml) => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(30);
     AppState.water += ml;
     window.logEvent("water", { ml });
     window.syncWaterFromNative(true);
     saveUIState();
-    if (window.AndroidBridge && window.AndroidBridge.sendNativeAlarm) {
-        window.AndroidBridge.sendNativeAlarm(102, 2 * 60 * 60, "💧 Время пить воду", "Прошло 2 часа. Сделай пару глотков.");
+    if (window.AndroidBridge && window.AndroidBridge.scheduleWaterAlarm) {
+        window.AndroidBridge.scheduleWaterAlarm(2 * 60 * 60);
     }
 };
 
 window.addCustomWater = () => {
+    if (!window.assertVaultUnlocked()) return;
     const input = document.getElementById("customWaterInput");
     const ml = safeParseInt(input.value, 0);
     if (ml > 0) {
@@ -330,25 +443,34 @@ window.syncWaterFromNative = (pushOnly = false) => {
                 );
                 const ackIds = [];
                 const today = window.todayKey();
+                const currentResetDay = AppState.lastResetDate || today;
                 pending.forEach(evt => {
                     if (!knownIds.has(evt.id)) {
-                        if (evt.day === today) {
-                            AppState.water += (evt.deltaMl || 0);
+                        const evtDay = evt.day || today;
+                        const delta = evt.deltaMl || 0;
+                        if (evtDay === currentResetDay) {
+                            AppState.water += delta;
+                        } else {
+                            AppState.dailyHistory[evtDay] = Object.assign({}, AppState.dailyHistory[evtDay] || {}, {
+                                water: (AppState.dailyHistory[evtDay]?.water || 0) + delta
+                            });
                         }
                         AppState.events.push({
                             id: "evt_tile_" + evt.id,
                             type: "water",
                             occurred_at: new Date(evt.ts || Date.now()).toISOString(),
-                            day: evt.day || today,
-                            payload: { ml: evt.deltaMl, source: "qs_tile", nativeId: evt.id }
+                            day: evtDay,
+                            payload: { ml: delta, source: "qs_tile", nativeId: evt.id }
                         });
                     }
                     ackIds.push(evt.id);
                 });
-                window.AndroidBridge.ackWaterQueue(JSON.stringify(ackIds), AppState.water);
+                const authoritativeToday = (AppState.lastResetDate === today) ? AppState.water : 0;
+                window.AndroidBridge.ackWaterQueue(JSON.stringify(ackIds), authoritativeToday);
                 saveUIState();
-            } else {
-                window.AndroidBridge.ackWaterQueue("[]", AppState.water);
+            } else if (window.AndroidBridge.ackWaterQueue) {
+                const authoritativeToday = (AppState.lastResetDate === todayKey()) ? AppState.water : 0;
+                window.AndroidBridge.ackWaterQueue("[]", authoritativeToday);
             }
         } catch (_) {}
     }
@@ -365,6 +487,7 @@ window.syncWaterFromNative = (pushOnly = false) => {
 
 // --- Food Totals ---
 window.saveHybridFood = () => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(30);
     const name = (document.getElementById("foodName").value || "Еда").trim();
     const b = safeParseInt(document.getElementById("foodB").value);
@@ -399,6 +522,7 @@ window.saveHybridFood = () => {
 };
 
 window.resetBJU = () => {
+    if (!window.assertVaultUnlocked()) return;
     AppState.food = { totalB: 0, totalF: 0, totalU: 0, totalKcal: 0 };
     AppState.todayFoodItems = [];
     saveUIState();
@@ -430,30 +554,29 @@ window.updateFoodUI = () => {
     }
 };
 
-window.escapeHtml = (s) => String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-
 // --- Chernihiv Air Raid Alerts & Weather ---
-const REGION_COORDS = {
-    "Чернігівська область": [51.4982, 31.2893],
-    "м. Київ": [50.4501, 30.5234],
-    "Київська область": [50.4501, 30.5234],
-    "Сумська область": [50.9077, 34.7981],
-    "Харківська область": [49.9935, 36.2304],
-    "Дніпропетровська область": [48.4647, 35.0462],
-    "Одеська область": [46.4825, 30.7233],
-    "Львівська область": [49.8397, 24.0297]
+const CITY_MAP = {
+    "Чернигов": { coords: [51.4982, 31.2893], oblast: "Чернігівська область", raionUid: "140", matchKw: "черніг" },
+    "Киев": { coords: [50.4501, 30.5234], oblast: "м. Київ", raionUid: "31", matchKw: "київ" },
+    "Сумы": { coords: [50.9077, 34.7981], oblast: "Сумська область", raionUid: "", matchKw: "сум" },
+    "Харьков": { coords: [49.9935, 36.2304], oblast: "Харківська область", raionUid: "", matchKw: "харків" },
+    "Днепр": { coords: [48.4647, 35.0462], oblast: "Дніпропетровська область", raionUid: "", matchKw: "дніпр" },
+    "Одесса": { coords: [46.4825, 30.7233], oblast: "Одеська область", raionUid: "", matchKw: "одес" },
+    "Львов": { coords: [49.8397, 24.0297], oblast: "Львівська область", raionUid: "", matchKw: "львів" }
 };
+
+function getCityInfo() {
+    const key = (AppState.dossier && AppState.dossier.region) || "Чернигов";
+    return { cityName: CITY_MAP[key] ? key : "Чернигов", ...(CITY_MAP[key] || CITY_MAP["Чернигов"]) };
+}
 
 window.refreshAirAlerts = (manual = false) => {
     const cbName = "onAirAlertsLoaded";
     if (manual) document.getElementById("airAlertStatus").innerText = "📡 Опрос...";
+    const token = (AppState.apiKeys && AppState.apiKeys.alertsInUaToken) || "";
 
     if (window.AndroidBridge && window.AndroidBridge.fetchAirAlertsAsync) {
-        window.AndroidBridge.fetchAirAlertsAsync(cbName);
+        window.AndroidBridge.fetchAirAlertsAsync(token, cbName);
     } else {
         fetch("https://ubilling.net.ua/aerialalerts/")
             .then(r => r.text())
@@ -469,31 +592,49 @@ window.onAirAlertsLoaded = (wrapperStr) => {
         const wrapper = JSON.parse(wrapperStr);
         if (!wrapper.ok) throw new Error(wrapper.error || `HTTP ${wrapper.status}`);
         const data = JSON.parse(wrapper.body);
-        const region = (AppState.dossier && AppState.dossier.region) || "Чернігівська область";
-        const statesMap = data.states || data.state || data;
-        const entry = statesMap[region];
-        if (!entry) throw new Error(`Регион "${region}" не найден в ответе`);
+        const city = getCityInfo();
 
-        const isActive = Boolean(entry.alertnow ?? entry.alert ?? entry.enabled);
-        const changed = entry.changed || "—";
+        let isActive = false;
+        let scopeLabel = `${city.cityName} (обл.)`;
+        let changed = "—";
+
+        if (Array.isArray(data.alerts)) {
+            // alerts.in.ua v1 format (city/raion/hromada precision)
+            const matched = data.alerts.filter(a => {
+                const title = String(a.location_title || "").toLowerCase();
+                const uid = String(a.location_uid || "");
+                return (city.raionUid && uid === city.raionUid) ||
+                    title.includes(city.matchKw);
+            });
+            isActive = matched.length > 0;
+            scopeLabel = `г. ${city.cityName}`;
+            changed = matched[0]?.started_at || new Date().toLocaleTimeString("ru-RU");
+        } else {
+            // ubilling.net.ua format
+            const statesMap = data.states || data.state || data;
+            const entry = statesMap[city.oblast];
+            if (!entry) throw new Error(`Регион "${city.oblast}" не найден`);
+            isActive = Boolean(entry.alertnow ?? entry.alert ?? entry.enabled);
+            changed = entry.changed || "—";
+        }
 
         pill.className = "alert-pill " + (isActive ? "alert-active" : "alert-safe");
-        pill.innerText = isActive ? `🚨 ТРЕВОГА` : `🟢 Отбой`;
+        pill.innerText = isActive ? "🚨 ТРЕВОГА" : "🟢 Отбой";
 
         detail.innerHTML = isActive
-            ? `<span class="text-danger font-bold">АКТИВНА ТРЕВОГА: ${escapeHtml(region)}</span><br><span class="text-xs text-muted">Изменено: ${escapeHtml(changed)}</span>`
-            : `<span class="text-success font-bold">Тишина: ${escapeHtml(region)}</span><br><span class="text-xs text-muted">Последний статус: ${escapeHtml(changed)}</span>`;
+            ? `<span class="text-danger font-bold">АКТИВНА ТРЕВОГА: ${escapeHtml(scopeLabel)}</span><br><span class="text-xs text-muted">Обновлено: ${escapeHtml(changed)}</span>`
+            : `<span class="text-success font-bold">Тишина: ${escapeHtml(scopeLabel)}</span><br><span class="text-xs text-muted">Последний статус: ${escapeHtml(changed)}</span>`;
 
         if (isActive && lastAirAlertActive === false) {
             window.haptic([250, 100, 250]);
-            window.logEvent("stress", { trigger: "Воздушная тревога", region });
+            window.logEvent("stress", { trigger: "Воздушная тревога", region: scopeLabel });
             if (window.calculateRecoveryScore) window.calculateRecoveryScore();
             if (window.AndroidBridge && window.AndroidBridge.showNotification) {
-                window.AndroidBridge.showNotification("🚨 Воздушная тревога", `${region}: перейди в безопасное место`);
+                window.AndroidBridge.showNotification("🚨 Воздушная тревога", `${scopeLabel}: перейди в укрытие`);
             }
         }
         lastAirAlertActive = isActive;
-    } catch (e) {
+    } catch (_) {
         pill.className = "alert-pill";
         pill.innerText = "📡 Оффлайн";
         if (detail) detail.innerText = "Радар тревог недоступен (нет сети или блокировка).";
@@ -501,13 +642,12 @@ window.onAirAlertsLoaded = (wrapperStr) => {
 };
 
 window.refreshWeather = (manual = false) => {
-    const region = (AppState.dossier && AppState.dossier.region) || "Чернігівська область";
-    const coords = REGION_COORDS[region] || [51.4982, 31.2893];
-    if (manual) document.getElementById("weatherStatus").innerText = "🌤 Обновляю...";
+    const city = getCityInfo();
+    if (manual) document.getElementById("weatherStatus").innerText = `🌤 ${city.cityName}...`;
     if (window.AndroidBridge && window.AndroidBridge.fetchWeatherAsync) {
-        window.AndroidBridge.fetchWeatherAsync(coords[0], coords[1], "onWeatherLoaded");
+        window.AndroidBridge.fetchWeatherAsync(city.coords[0], city.coords[1], "onWeatherLoaded");
     } else {
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${coords[0]}&longitude=${coords[1]}&current=temperature_2m,wind_speed_10m,weather_code&timezone=auto`)
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${city.coords[0]}&longitude=${city.coords[1]}&current=temperature_2m,wind_speed_10m,weather_code&timezone=Europe%2FKyiv`)
             .then(r => r.text())
             .then(body => window.onWeatherLoaded(JSON.stringify({ ok: true, body })))
             .catch(() => {});
@@ -522,8 +662,8 @@ window.onWeatherLoaded = (wrapperStr) => {
         if (data.current) {
             const temp = Math.round(data.current.temperature_2m);
             const wind = Math.round(data.current.wind_speed_10m);
-            const regionShort = ((AppState.dossier && AppState.dossier.region) || "Чернигов").split(" ")[0];
-            document.getElementById("weatherStatus").innerText = `🌤 ${regionShort}: ${temp > 0 ? "+" + temp : temp}°C · ${wind} км/ч`;
+            const city = getCityInfo();
+            document.getElementById("weatherStatus").innerText = `🌤 ${city.cityName}: ${temp > 0 ? "+" + temp : temp}°C · ${wind} км/ч`;
         }
     } catch (_) {}
 };
@@ -546,7 +686,6 @@ window.saveFileToDownloads = (filename, mimeType, bytesOrBase64, isAlreadyBase64
         }
     }
 
-    // Fallback for desktop browser
     const byteChars = atob(b64);
     const arr = new Uint8Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) arr[i] = byteChars.charCodeAt(i);
@@ -565,11 +704,13 @@ window.saveFileToDownloads = (filename, mimeType, bytesOrBase64, isAlreadyBase64
 
 // --- Medical Report Export (.txt with UTF-8 BOM) ---
 window.exportMedicalReportTxt = () => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(30);
     const d = AppState.dossier || {};
     let report = "\uFEFF";
     report += "=== МЕДИЧНИЙ ЗВІТ / ПАЦІЄНТ ===\n\n";
     report += `Дата генерації: ${new Date().toLocaleString("uk-UA")}\n`;
+    report += `Місто: ${d.region || "Чернигов"}\n`;
     report += `Рік народження: ${d.year || "—"} | Зріст: ${d.height || "—"} см | Вага: ${d.weight || "—"} кг\n`;
     report += `Група крові: ${d.blood || "—"}\n`;
     report += `Алергії: ${d.allergies || "Не вказано"}\n`;
@@ -583,6 +724,7 @@ window.exportMedicalReportTxt = () => {
     report += "--- БАДИ ТА ПРЕПАРАТИ ---\n";
     const meta = AppState.suppMeta || window.DEFAULT_SUPP_META;
     for (const k in meta) {
+        if (meta[k].archived) continue;
         const taken = AppState.supps[k] ? "[ПРИЙНЯТО СЬОГОДНІ]" : "[Не прийнято]";
         const stock = AppState.suppsInventory[k] || 0;
         report += `- ${meta[k].label} ${taken} (залишок: ${stock} шт)\n`;
@@ -598,7 +740,6 @@ window.exportMedicalReportTxt = () => {
     window.saveFileToDownloads(filename, "text/plain;charset=utf-8", report, false);
 };
 
-// --- DOM Contract Self-Check ---
 window.verifyDomContract = () => {
     const requiredIds = [
         "loginOverlay", "vaultSetupContainer", "calcModeContainer", "calcDisplay",
@@ -606,7 +747,8 @@ window.verifyDomContract = () => {
         "module-dashboard", "module-dossier", "module-nutrition", "module-water",
         "module-sleep", "module-workout", "module-biometrics", "module-pharma",
         "module-chat", "module-stegano", "module-settings", "module-sos",
-        "cnsChart", "pvtButton", "suppsContainer", "chatHistory"
+        "cnsChart", "pvtButton", "suppsContainer", "chatHistory",
+        "trainerModelSelect", "visionModelSelect", "appVersionBadge"
     ];
     const missing = requiredIds.filter(id => !document.getElementById(id));
     if (missing.length > 0) {

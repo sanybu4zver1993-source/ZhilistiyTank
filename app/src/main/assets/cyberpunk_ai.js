@@ -1,10 +1,47 @@
 "use strict";
 
-// --- Google Gemini AI Router (gemini-4-hydrogen, Thinking Level HIGH, Zero Groq) ---
+// --- Google Gemini AI Router (User-Provided Keys, Dynamic Model Discovery, Native Proxy) ---
+let geminiCbCounter = 0;
+
+function nativeCallGemini(apiKey, modelId, payloadObj) {
+    if (window.AndroidBridge && window.AndroidBridge.callGeminiAsync) {
+        return new Promise((resolve) => {
+            const cbName = "__vtGeminiCb_" + (++geminiCbCounter);
+            window[cbName] = (resStr) => {
+                delete window[cbName];
+                try {
+                    resolve(JSON.parse(resStr));
+                } catch (_) {
+                    resolve({ ok: false, status: 0, error: "Invalid bridge response" });
+                }
+            };
+            window.AndroidBridge.callGeminiAsync(apiKey, modelId, JSON.stringify(payloadObj), cbName);
+        });
+    }
+
+    const cleanModel = (modelId || "").replace(/^models\//, "");
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent`;
+    return fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": apiKey
+        },
+        body: JSON.stringify(payloadObj)
+    })
+        .then(async (res) => {
+            const body = await res.text();
+            return { ok: res.ok, status: res.status, body };
+        })
+        .catch((err) => ({ ok: false, status: 0, error: err.message }));
+}
+
 window.AIRouter = {
     fails: 0,
     quarantineUntil: 0,
     cache: {},
+    CACHE_TTL_MS: 7 * 24 * 60 * 60 * 1000,
+    CACHE_MAX_ENTRIES: 30,
 
     hashString(str) {
         let hash = 0;
@@ -15,15 +52,54 @@ window.AIRouter = {
         return String(hash);
     },
 
+    pruneCache() {
+        const now = Date.now();
+        const keys = Object.keys(this.cache);
+        for (const k of keys) {
+            if (!this.cache[k]?.ts || (now - this.cache[k].ts) > this.CACHE_TTL_MS) {
+                delete this.cache[k];
+            }
+        }
+        const remaining = Object.keys(this.cache).sort((a, b) => this.cache[a].ts - this.cache[b].ts);
+        while (remaining.length > this.CACHE_MAX_ENTRIES) {
+            const oldest = remaining.shift();
+            delete this.cache[oldest];
+        }
+    },
+
+    buildGenerationConfig(modelId, role, options = {}) {
+        const base = {
+            temperature: options.temperature ?? (role === "vision" ? 0.15 : 0.4)
+        };
+        const m = (modelId || "").toLowerCase();
+        const trainerThinking = options.thinkingLevel || AppState.apiKeys?.thinkingLevel || "HIGH";
+
+        if (m.includes("gemini-3") || m.includes("gemini-4") || m.includes("hydrogen")) {
+            base.thinkingConfig = { thinkingLevel: role === "vision" ? "LOW" : trainerThinking };
+        } else if (m.includes("gemini-2.5")) {
+            base.thinkingConfig = { thinkingBudget: role === "vision" ? 1024 : 8192 };
+        }
+
+        if (options.json) {
+            base.responseMimeType = "application/json";
+        }
+        return base;
+    },
+
     async callGemini(role, contents, options = {}) {
         const keys = AppState.apiKeys || {};
-        const key = role === "vision" ? (keys.visionKey || keys.trainerKey) : (keys.trainerKey || keys.visionKey);
-        const model = keys.geminiModel || "gemini-4-hydrogen";
-        const thinkingLevel = keys.thinkingLevel || "HIGH";
+        const key = role === "vision"
+            ? (keys.visionKey || keys.trainerKey)
+            : (keys.trainerKey || keys.visionKey);
+        const model = role === "vision"
+            ? (keys.visionModel || keys.trainerModel || "gemini-4-hydrogen")
+            : (keys.trainerModel || keys.visionModel || "gemini-4-hydrogen");
 
+        this.pruneCache();
         const cacheKey = this.hashString(role + "|" + model + "|" + JSON.stringify(contents));
-        if (this.cache[cacheKey]) {
-            return { ...this.cache[cacheKey], source: "cache" };
+        const cached = this.cache[cacheKey];
+        if (cached && (Date.now() - cached.ts) <= this.CACHE_TTL_MS) {
+            return { text: cached.text, source: "cache" };
         }
 
         if (!key) {
@@ -34,39 +110,32 @@ window.AIRouter = {
             return this._offlineFallback(options.json, "ИИ в карантине на 15 мин после серии сбоев");
         }
 
-        const body = {
+        const payload = {
             contents,
-            generationConfig: {
-                temperature: options.temperature ?? 0.4,
-                thinkingConfig: {
-                    thinkingLevel
-                }
-            }
+            generationConfig: this.buildGenerationConfig(model, role, options)
         };
 
         if (options.systemInstruction) {
-            body.systemInstruction = { parts: [{ text: options.systemInstruction }] };
-        }
-        if (options.json) {
-            body.generationConfig.responseMimeType = "application/json";
+            payload.systemInstruction = { parts: [{ text: options.systemInstruction }] };
         }
 
         let retries = options.retries ?? 1;
         while (retries >= 0) {
             try {
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-                const res = await fetch(url, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(body)
-                });
+                let res = await nativeCallGemini(key, model, payload);
 
-                if (!res.ok) {
-                    const errText = await res.text();
-                    throw new Error(`HTTP ${res.status}: ${errText.slice(0, 120)}`);
+                // Transparent one-time fallback if model rejects thinkingConfig with HTTP 400 (no failure penalty)
+                if (!res.ok && res.status === 400 && payload.generationConfig.thinkingConfig) {
+                    delete payload.generationConfig.thinkingConfig;
+                    res = await nativeCallGemini(key, model, payload);
                 }
 
-                const data = await res.json();
+                if (!res.ok) {
+                    const errDetail = (res.body || res.error || "").slice(0, 140);
+                    throw new Error(`HTTP ${res.status || 0}: ${errDetail}`);
+                }
+
+                const data = JSON.parse(res.body);
                 const parts = data.candidates?.[0]?.content?.parts || [];
                 const textPart = parts.filter(p => typeof p.text === "string" && !p.thought).map(p => p.text).join("\n")
                     || parts.map(p => p.text || "").join("\n");
@@ -74,9 +143,10 @@ window.AIRouter = {
                 if (!textPart.trim()) throw new Error("Пустой ответ от Gemini");
 
                 this.fails = 0;
-                const result = { text: textPart.trim(), source: model };
-                this.cache[cacheKey] = result;
-                return result;
+                const cleanText = textPart.trim();
+                this.cache[cacheKey] = { text: cleanText, ts: Date.now() };
+                this.pruneCache();
+                return { text: cleanText, source: model };
             } catch (err) {
                 retries--;
                 if (retries < 0) {
@@ -138,6 +208,7 @@ window.buildWeeklyFeaturePack = () => {
 };
 
 window.sendChatMessage = async (overrideMsg = null) => {
+    if (!window.assertVaultUnlocked()) return;
     const inputEl = document.getElementById("chatInput");
     const msg = (overrideMsg || inputEl.value).trim();
     if (!msg) return;
@@ -191,17 +262,14 @@ function removeLastMessage() {
     if (hist && hist.lastChild) hist.removeChild(hist.lastChild);
 }
 
-// --- Photo Food Vision ---
+// --- Photo Food Vision (accepts pre-compressed JPEG Base64 from Kotlin or browser fallback) ---
 window.lastAiFoodPrediction = null;
 
-window.analyzeFoodImage = (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
+window.analyzeFoodImageBase64 = async (base64data, mimeType = "image/jpeg") => {
+    if (!window.assertVaultUnlocked()) return;
     const keys = AppState.apiKeys || {};
     if (!keys.visionKey && !keys.trainerKey) {
-        return showToast("Укажи Gemini Vision Key в Настройках!");
+        return showToast("Укажи Gemini Vision Key в ⚙️ Настройки!");
     }
 
     if ((AppState.foodEditErrors || 0) > 3) {
@@ -209,43 +277,36 @@ window.analyzeFoodImage = (event) => {
     }
 
     const statusEl = document.getElementById("foodImageStatus");
-    statusEl.innerHTML = "<span class='text-primary'>⏳ Анализирую фото через Gemini Hydrogen...</span>";
+    const activeVisionModel = keys.visionModel || keys.trainerModel || "Gemini";
+    statusEl.innerHTML = `<span class='text-primary'>⏳ Анализирую фото (${escapeHtml(activeVisionModel)})...</span>`;
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-        try {
-            const dataUrl = String(e.target.result || "");
-            const base64data = dataUrl.split(",")[1];
-            const mimeType = file.type || "image/jpeg";
+    try {
+        const prompt = `Ты эксперт-диетолог. Определи блюдо и оцени суммарные калории и БЖУ порции на фото. Верни СТРОГО JSON: {"name": "название", "kcal": число, "b": число, "f": число, "u": число}.`;
+        const res = await window.AIRouter.callGemini(
+            "vision",
+            [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64data } }] }],
+            { temperature: 0.1, json: true, retries: 1 }
+        );
 
-            const prompt = `Ты эксперт-диетолог. Определи блюдо и оцени суммарные калории и БЖУ порции на фото. Верни СТРОГО JSON: {"name": "название", "kcal": число, "b": число, "f": число, "u": число}.`;
-            const res = await window.AIRouter.callGemini(
-                "vision",
-                [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64data } }] }],
-                { temperature: 0.1, json: true, retries: 1 }
-            );
-
-            if (res.source === "offline") {
-                statusEl.innerHTML = `<span class="text-danger">❌ Оффлайн/ошибка: ${escapeHtml(res.reason || "нет сети")}</span>`;
-                return;
-            }
-
-            const cleanJson = res.text.replace(/```json/gi, "").replace(/```/g, "").trim();
-            const parsed = JSON.parse(cleanJson);
-
-            document.getElementById("foodName").value = parsed.name || "Еда с фото";
-            document.getElementById("foodKcal").value = Math.round(parsed.kcal || 0);
-            document.getElementById("foodB").value = Math.round(parsed.b || 0);
-            document.getElementById("foodF").value = Math.round(parsed.f || 0);
-            document.getElementById("foodU").value = Math.round(parsed.u || 0);
-            window.lastAiFoodPrediction = parsed.kcal || 0;
-
-            statusEl.innerHTML = `<span class="text-success">Распознано!</span> <span class="text-xs text-muted">(${escapeHtml(res.source)})</span>`;
-        } catch (err) {
-            statusEl.innerText = "❌ Ошибка распознавания: " + err.message;
+        if (res.source === "offline") {
+            statusEl.innerHTML = `<span class="text-danger">❌ Оффлайн/ошибка: ${escapeHtml(res.reason || "нет сети")}</span>`;
+            return;
         }
-    };
-    reader.readAsDataURL(file);
+
+        const cleanJson = res.text.replace(/```json/gi, "").replace(/```/g, "").trim();
+        const parsed = JSON.parse(cleanJson);
+
+        document.getElementById("foodName").value = parsed.name || "Еда с фото";
+        document.getElementById("foodKcal").value = Math.round(parsed.kcal || 0);
+        document.getElementById("foodB").value = Math.round(parsed.b || 0);
+        document.getElementById("foodF").value = Math.round(parsed.f || 0);
+        document.getElementById("foodU").value = Math.round(parsed.u || 0);
+        window.lastAiFoodPrediction = parsed.kcal || 0;
+
+        statusEl.innerHTML = `<span class="text-success">Распознано!</span> <span class="text-xs text-muted">(${escapeHtml(res.source)})</span>`;
+    } catch (err) {
+        statusEl.innerText = "❌ Ошибка распознавания: " + err.message;
+    }
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -260,31 +321,129 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 });
 
-// --- Settings UI ---
+// --- Dynamic Model Discovery per Role & Settings UI ---
+function populateModelSelect(selectId, modelsList, currentVal) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
+    const list = Array.isArray(modelsList) && modelsList.length > 0
+        ? modelsList
+        : ["gemini-4-hydrogen", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+    const chosen = list.includes(currentVal) ? currentVal : (currentVal || list[0]);
+    const finalItems = list.includes(chosen) ? list : [chosen, ...list];
+
+    sel.innerHTML = finalItems.map(m =>
+        `<option value="${escapeHtml(m)}" ${m === chosen ? "selected" : ""}>${escapeHtml(m)}</option>`
+    ).join("");
+    sel.value = chosen;
+}
+
+window.loadModelsForRole = (role) => {
+    if (!window.assertVaultUnlocked()) return;
+    const isVision = role === "vision";
+    const keyInput = document.getElementById(isVision ? "geminiVisionKey" : "geminiTrainerKey");
+    const key = (keyInput?.value || "").trim();
+    if (!key) return showToast("Сначала вставь API ключ в поле слева!");
+
+    showToast("🔄 Загружаю доступные модели...");
+    const cbName = isVision ? "onVisionModelsLoaded" : "onTrainerModelsLoaded";
+
+    if (window.AndroidBridge && window.AndroidBridge.fetchGeminiModelsAsync) {
+        window.AndroidBridge.fetchGeminiModelsAsync(key, cbName);
+    } else {
+        fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100", {
+            headers: { "Accept": "application/json", "x-goog-api-key": key }
+        })
+            .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+            .then(data => {
+                const models = (data.models || [])
+                    .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+                    .map(m => (m.name || "").replace(/^models\//, ""))
+                    .filter(n => n && !/tts|embedding|imagen|robotics|aqa/i.test(n));
+                window[cbName](JSON.stringify({ ok: true, fallback: false, models }));
+            })
+            .catch(() => {
+                window[cbName](JSON.stringify({
+                    ok: true,
+                    fallback: true,
+                    note: "Показан базовый список моделей",
+                    models: ["gemini-4-hydrogen", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+                }));
+            });
+    }
+};
+
+function handleModelsLoadedForRole(role, resStr) {
+    try {
+        const res = JSON.parse(resStr);
+        if (!res.ok || !Array.isArray(res.models) || res.models.length === 0) {
+            return showToast("❌ Не удалось загрузить модели: " + (res.error || "пустой список"));
+        }
+        const isVision = role === "vision";
+        if (isVision) {
+            AppState.apiKeys.visionKey = (document.getElementById("geminiVisionKey").value || "").trim();
+            AppState.apiKeys.visionModels = res.models;
+            if (!res.models.includes(AppState.apiKeys.visionModel)) {
+                AppState.apiKeys.visionModel = res.models[0];
+            }
+            populateModelSelect("visionModelSelect", res.models, AppState.apiKeys.visionModel);
+        } else {
+            AppState.apiKeys.trainerKey = (document.getElementById("geminiTrainerKey").value || "").trim();
+            AppState.apiKeys.trainerModels = res.models;
+            if (!res.models.includes(AppState.apiKeys.trainerModel)) {
+                AppState.apiKeys.trainerModel = res.models[0];
+            }
+            populateModelSelect("trainerModelSelect", res.models, AppState.apiKeys.trainerModel);
+        }
+        saveUIState();
+        window.loadApiKeysUI();
+        showToast(res.fallback && res.note ? `ℹ️ ${res.note}` : `✅ Загружено моделей: ${res.models.length}`);
+    } catch (_) {
+        showToast("❌ Ошибка разбора списка моделей");
+    }
+}
+
+window.onTrainerModelsLoaded = (resStr) => handleModelsLoadedForRole("trainer", resStr);
+window.onVisionModelsLoaded = (resStr) => handleModelsLoadedForRole("vision", resStr);
+
 window.loadApiKeysUI = () => {
     const k = AppState.apiKeys || {};
     if (document.getElementById("geminiTrainerKey")) document.getElementById("geminiTrainerKey").value = k.trainerKey || "";
     if (document.getElementById("geminiVisionKey")) document.getElementById("geminiVisionKey").value = k.visionKey || "";
-    if (document.getElementById("geminiModelSelect")) document.getElementById("geminiModelSelect").value = k.geminiModel || "gemini-4-hydrogen";
     if (document.getElementById("geminiThinkingSelect")) document.getElementById("geminiThinkingSelect").value = k.thinkingLevel || "HIGH";
+    if (document.getElementById("alertsInUaToken")) document.getElementById("alertsInUaToken").value = k.alertsInUaToken || "";
+
+    populateModelSelect("trainerModelSelect", k.trainerModels, k.trainerModel || "gemini-4-hydrogen");
+    populateModelSelect("visionModelSelect", k.visionModels, k.visionModel || "gemini-4-hydrogen");
+
     const badge = document.getElementById("chatModelBadge");
-    if (badge) badge.innerText = `${k.geminiModel || "gemini-4-hydrogen"} · ${k.thinkingLevel || "HIGH"}`;
+    if (badge) {
+        badge.innerText = k.trainerKey || k.visionKey
+            ? `${k.trainerModel || "gemini-4-hydrogen"} · ${k.thinkingLevel || "HIGH"}`
+            : "Ключ не задан";
+    }
 };
 
 window.saveSettings = () => {
+    if (!window.assertVaultUnlocked()) return;
     window.haptic(30);
+    const prev = AppState.apiKeys || {};
     AppState.apiKeys = {
         trainerKey: (document.getElementById("geminiTrainerKey").value || "").trim(),
+        trainerModel: document.getElementById("trainerModelSelect").value || prev.trainerModel || "gemini-4-hydrogen",
+        trainerModels: prev.trainerModels || ["gemini-4-hydrogen", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
         visionKey: (document.getElementById("geminiVisionKey").value || "").trim(),
-        geminiModel: document.getElementById("geminiModelSelect").value || "gemini-4-hydrogen",
-        thinkingLevel: document.getElementById("geminiThinkingSelect").value || "HIGH"
+        visionModel: document.getElementById("visionModelSelect").value || prev.visionModel || "gemini-4-hydrogen",
+        visionModels: prev.visionModels || ["gemini-4-hydrogen", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        thinkingLevel: document.getElementById("geminiThinkingSelect").value || "HIGH",
+        alertsInUaToken: (document.getElementById("alertsInUaToken").value || "").trim()
     };
     window.AIRouter.cache = {};
     window.AIRouter.quarantineUntil = 0;
     window.AIRouter.fails = 0;
     saveUIState();
     window.loadApiKeysUI();
-    showToast("✅ API настройки (Gemini Hydrogen) сохранены!");
+    window.refreshAirAlerts(false);
+    showToast("✅ API настройки сохранены в Vault!");
 };
 
 window.refreshExactAlarmStatus = () => {
@@ -303,6 +462,22 @@ window.refreshExactAlarmStatus = () => {
 window.openExactAlarmSettingsUI = () => {
     if (window.AndroidBridge && window.AndroidBridge.openExactAlarmSettings) {
         window.AndroidBridge.openExactAlarmSettings();
+    } else {
+        showToast("Доступно только в Android APK");
+    }
+};
+
+window.openBatteryOptimizationUI = () => {
+    if (window.AndroidBridge && window.AndroidBridge.openBatteryOptimizationSettings) {
+        window.AndroidBridge.openBatteryOptimizationSettings();
+    } else {
+        showToast("Доступно только в Android APK");
+    }
+};
+
+window.openAutoStartUI = () => {
+    if (window.AndroidBridge && window.AndroidBridge.openHyperOsAutoStartSettings) {
+        window.AndroidBridge.openHyperOsAutoStartSettings();
     } else {
         showToast("Доступно только в Android APK");
     }

@@ -1,0 +1,491 @@
+Привет! Отличная вводная. Архитектура Варианта C (локальный `WebViewAssetLoader` + изолированный нативный крипто-слой в `noBackupFilesDir`) для бюджетного MediaTek Helio G85 (Cortex-A75/A55, медленная флеш-память eMMC 5.1 и агрессивный менеджер памяти HyperOS на 4 ГБ ОЗУ) выбрана абсолютно верно. Отказ от тяжёлых ORM и сетевых фреймворков экономит десятки мегабайт оперативной памяти на старте.
+
+Однако сейчас в проекте есть несколько критических точек отказа: гонка жизненных циклов Android при вызове системных диалогов, нарушение принципов правдоподобного отрицания (Plausible Deniability) на уровне как интерфейса, так и бинарной структуры контейнера, специфика ключей Gemini (включая ключи формата `AQ...`), а также риск `OutOfMemoryError` при кодировании фотографий внутри WebView на устройстве с 4 ГБ RAM.
+
+Ниже представлен полный инженерный разбор всех 13 пунктов с готовыми к внедрению патчами на Kotlin и JavaScript, адаптированными под `targetSdk = 36`, AGP 9.1 и реалии HyperOS (Android 15).
+
+---
+
+**Блок А. Безопасность, Крипто-Vault и Нативный Kotlin:**
+
+**1. Подавление `lockToStealth()` при системных диалогах без дыр при нажатии Home и блокировке экрана:**
+
+Проблема безусловной блокировки в `onPause()` решается комбинацией атомарного состояния ожидания внешнего интента (`externalFlowDeadlineMs`), проверки состояния интерактивности экрана через `PowerManager.isInteractive` и перехвата системного сигнала `ACTION_CLOSE_SYSTEM_DIALOGS` (а также `onUserLeaveHint` с поправкой на то, что запуск системного пикера тоже вызывает `onUserLeaveHint`, поэтому полагаться нужно именно на флаг *собственного* запуска лончера в паре с проверкой выключения экрана и жёстким TTL).
+
+Логика защиты должна работать следующим образом: непосредственно перед вызовом `filePickerLauncher.launch(...)` или отправкой пользователя в настройки `ACTION_REQUEST_SCHEDULE_EXACT_ALARM`, ваш код взводит флаг `awaitingSystemResult = true` и фиксирует дедлайн `SystemClock.elapsedRealtime() + 90_000L`. Когда система переводит `MainActivity` в `onPause()`, проверяются три условия. Во-первых, если экран физически погас (`!powerManager.isInteractive`, то есть нажата кнопка питания) — приложение блокируется **мгновенно**, невзирая на открытый пикер, и флаг сбрасывается. Во-вторых, если флаг `awaitingSystemResult` активен и дедлайн не истёк — переход в `onPause()` и `onStop()` **не** вызывает `lockToStealth()` и **не** стирает ключ из памяти. В-третьих, как только срабатывает callback `ActivityResultCallback` (даже если пользователь нажал «Назад» в пикере и вернул `null`) или наступает `onResume()` после возврата из системных настроек — флаг `awaitingSystemResult` немедленно сбрасывается в `false`. Если же пользователь открыл файловый пикер, а затем из него свернул всё кнопкой Home и оставил телефон на столе, по истечении 90 секунд при возврате в `onResume()` сработает проверка просроченного TTL, которая принудительно сбросит сессию до отрисовки кадра.
+
+```kotlin
+// Внутри MainActivity.kt
+private var awaitingSystemResult = false
+private var systemResultDeadlineMs = 0L
+
+fun launchExternalSystemFlow(ttlMs: Long = 90_000L, block: () -> Unit) {
+    awaitingSystemResult = true
+    systemResultDeadlineMs = android.os.SystemClock.elapsedRealtime() + ttlMs
+    try {
+        block()
+    } catch (e: Exception) {
+        awaitingSystemResult = false
+        systemResultDeadlineMs = 0L
+    }
+}
+
+override fun onPause() {
+    super.onPause()
+    val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+    val now = android.os.SystemClock.elapsedRealtime()
+    val isPickerGraceActive = awaitingSystemResult && now < systemResultDeadlineMs && pm.isInteractive
+
+    if (!isPickerGraceActive) {
+        awaitingSystemResult = false
+        vaultManager.clearSessionInRam()
+        webViewRef?.evaluateJavascript("window.onAppBackgrounded && window.onAppBackgrounded();", null)
+    }
+}
+
+override fun onResume() {
+    super.onResume()
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (awaitingSystemResult && now >= systemResultDeadlineMs) {
+        // TTL истёк, пока юзер гулял вне пикера — жёсткая блокировка
+        awaitingSystemResult = false
+        vaultManager.clearSessionInRam()
+        webViewRef?.evaluateJavascript("window.onAppBackgrounded && window.onAppBackgrounded();", null)
+        return
+    }
+    // Если вернулись из настроек будильника (где нет ActivityResultCallback), гасим флаг
+    if (awaitingSystemResult) {
+        awaitingSystemResult = false
+        systemResultDeadlineMs = 0L
+    }
+    webViewRef?.evaluateJavascript("window.syncWaterFromNative && window.syncWaterFromNative();", null)
+}
+```
+В callback самого `filePickerLauncher` первой же строкой также ставьте `awaitingSystemResult = false; systemResultDeadlineMs = 0L`, чтобы окно уязвимости закрывалось в миллисекунду получения URI.
+
+**2. Полная изоляция Lockscreen SOS (Защита от обхода стелс-экрана):**
+
+Нельзя просто скрывать `#loginOverlay`, обнажая DOM основного приложения при `VaultSession.unlocked === false`. Для экстренного режима (физиологический вздох и 15-минутный NSDR) необходимо вводить изолированный CSS-режим на уровне `document.body.classList.add('lockscreen-sos-mode')` и жёсткий программный предохранитель во всех функциях мутации `AppState`.
+
+В CSS правило `.lockscreen-sos-mode` принудительно скрывает шапку, `#navGrid` и все модули, кроме `#module-sos`, а внутри самого `#module-sos` показывает специальную кнопку `#btnReturnToCalc`:
+
+```css
+body.lockscreen-sos-mode header,
+body.lockscreen-sos-mode #navGrid,
+body.lockscreen-sos-mode .module-section:not(#module-sos),
+body.lockscreen-sos-mode .auth-only-control {
+    display: none !important;
+}
+body:not(.lockscreen-sos-mode) #btnReturnToCalc {
+    display: none !important;
+}
+```
+
+В JavaScript (`security_stego.js` и `app.js`) добавляется двойной барьер — визуальный и логический:
+
+```javascript
+function openLockscreenSOS() {
+    if (VaultSession.unlocked) {
+        switchModule('sos');
+        return;
+    }
+    document.body.classList.add('lockscreen-sos-mode');
+    document.getElementById('loginOverlay').style.display = 'none';
+    document.querySelectorAll('.module-section').forEach(el => el.classList.remove('active'));
+    document.getElementById('module-sos').classList.add('active');
+}
+
+function exitLockscreenSOS() {
+    stopAllSosTimers(); // Останавливаем аудио/таймеры NSDR
+    document.body.classList.remove('lockscreen-sos-mode');
+    document.getElementById('module-sos').classList.remove('active');
+    document.getElementById('loginOverlay').style.display = 'flex';
+}
+
+// Глобальный гард для любых мутаций (addWater, logFood, saveState и т.д.)
+function assertVaultUnlocked() {
+    if (!VaultSession.unlocked) {
+        console.warn("Blocked state mutation while Vault is locked.");
+        return false;
+    }
+    return true;
+}
+```
+
+**3. Устранение утечки Plausible Deniability (UI + Крипто-неразличимость `tank_state.bin`):**
+
+Текущая реализация нарушает главный постулат правдоподобного отрицания: фейковый профиль **обязан** вести себя и выглядеть на 100% как единственный основной профиль в приложении. Кроме того, если при новом упрощённом онбординге пользователь задаёт только один Real PIN, нельзя оставлять Слот 1 заполненным нулями или предсказуемым паттерном — криминалистический анализ энтропии файла `tank_state.bin` (8 МБ) мгновенно покажет, что первые 4 МБ имеют высокую энтропию шифротекста, а вторые 4 МБ пусты (значит, скрытый слот не используется, или наоборот — если оба заполнены только у тех, кто включил Decoy, сам факт высокой энтропии второго слота доказывает наличие второго пароля).
+
+Решение состоит из трёх частей:
+
+* **Бинарная неразличимость при онбординге с 1 PIN:** При создании контейнера `tank_state.bin` оба слота по $$4\,\text{MB}$$ (`4 * 1024 * 1024` байт) сначала целиком перезаписываются криптостойким генератором `SecureRandom`. Слот 0 получает заголовок `IV (12 B) + Ciphertext + GCM Tag (16 B)` от реального JSON, а хвост слота до $$4\,\text{MB}$$ остаётся неотличимым случайным шумом `SecureRandom` (длина полезной нагрузки шифруется **внутри** самого AES-GCM блока в первых 4 байтах plaintext, а не в открытом заголовке!). Слот 1, даже если Decoy PIN не задан, инициализируется шифрованием пустого стартового JSON на одноразовом случайном 256-битном ключе, который тут же выбрасывается из памяти. В результате оба слота имеют идентичную структуру: 12 байт случайного IV и $$4\,194\,292$$ байта криптографически неотличимого потока с равномерным распределением байтов.
+* **Маскировка UI Настроек в обоих слотах:** Из основного экрана Настроек полностью убираются явные подписи «Фейковый PIN (Decoy)» и «Panic Wipe PIN». Вместо этого в разделе безопасности делается стандартный блок **«Изменить PIN-код доступа»** (работает и в Слоте 0, и в Слоте 1 — в Слоте 1 он реально перешифровывает Слот 1 на новый PIN без всяких тостов с ошибками!).
+* **Скрытая настройка Decoy и Panic PIN:** Настройка дополнительных кодов в Слоте 0 прячется за неочевидным действием (например, 5 тапов по версии сборки `VeinyTank v4.2` в подвале настроек, которые открывают модальное окно «Дополнительные коды безопасности» **только** если `activeSlot === 0`; в `activeSlot === 1` 5 тапов просто показывают безобидный тост `Сборка актуальна: v4.2-release`). Таким образом, проверяющий в Decoy-слоте видит полноценно работающую смену PIN-кода и отсутствие любых упоминаний о двойном дне.
+
+**4. Перенос сессионного ключа из JS Heap в Kotlin RAM и выживание на 4 ГБ RAM:**
+
+Хранить `VaultSession.pin` в строке JavaScript недопустимо: строки в V8 неизменяемы (immutable) и остаются в куче WebView до непредсказуемых проходов сборщика мусора, а также уязвимы при любом XSS. Ключ должен жить исключительно в объекте-синглтоне (или `Application`-скоупе) в Kotlin в виде байтового массива `ByteArray(32)`, из которого на время одной операции `Cipher.init` конструируется `SecretKeySpec` (или зануляется внутренний буфер после блокировки).
+
+Что произойдёт на Redmi 13C (4 ГБ RAM), если HyperOS убьёт процесс или пересоздаст `Activity`?
+* Если пересоздаётся только `Activity` (например, смена конфигурации), синглтон `VaultManager`, привязанный к `applicationContext`, сохранит сессию в RAM, но чтобы этого вообще не происходило при поворотах/клавиатуре, в `AndroidManifest.xml` у `MainActivity` обязательно прописывается `android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density"`.
+* Если приложение было свёрнуто и HyperOS убила сам Linux-процесс приложения (`Process death`) ради освобождения памяти — при возврате пользователя `VaultManager.hasActiveSession()` вернёт `false`. Это абсолютно штатное и безопасное поведение для крипто-сейфа! Главное — чтобы фронтенд не падал при попытке автосохранения в мёртвую сессию: метод `AndroidBridge.saveVaultState(json)` должен возвращать код статуса (`"OK"` или `"LOCKED"`). Если вернулся `"LOCKED"`, JS немедленно вызывает `lockToStealthUI()`, требуя повторного ввода PIN.
+
+```kotlin
+// Внутри VaultManager.kt
+private val sessionLock = Any()
+private var activeSlot: Int = -1
+private var sessionKeyBytes: ByteArray? = null
+
+fun clearSessionInRam() {
+    synchronized(sessionLock) {
+        sessionKeyBytes?.fill(0)
+        sessionKeyBytes = null
+        activeSlot = -1
+    }
+}
+
+fun saveActiveSlot(plaintextJson: ByteArray): Boolean {
+    val (slot, keyCopy) = synchronized(sessionLock) {
+        val k = sessionKeyBytes ?: return false
+        if (activeSlot !in 0..1) return false
+        activeSlot to k.copyOf()
+    }
+    try {
+        writeEncryptedSlot(slot, keyCopy, plaintextJson)
+        return true
+    } finally {
+        keyCopy.fill(0)
+    }
+}
+```
+
+**5. Устранение задержки калькулятора на Helio G85 + правила ProGuard/R8 (AGP 9.1):**
+
+Крутить $$2 \times 120\,000$$ итераций `PBKDF2WithHmacSHA256` на каждое нажатие `2+2=` на ядрах Cortex-A55/A75 — это лишний лаг в 250 мс и нагрев без реального выигрыша в безопасности. Защита от утечки по времени (timing side-channel) актуальна против *сетевого* или аппаратного наблюдателя при вводе потенциального PIN-кода, но выражение `2+2` даже синтаксически не является PIN-кодом!
+
+Оптимальный паттерн без потери безопасности:
+1. Введите форматное правило: PIN-код — это строка строго из цифр длиной от 4 до 12 символов (`/^\d{4,12}$/`).
+2. Если на экране калькулятора введено математическое выражение с операторами (`+`, `-`, `*`, `/`, `.`, скобки) или число короче 4 цифр — калькулятор вычисляет ответ **за 0.1 мс локально в JS**, вообще не дёргая `AndroidBridge.unlockOrWipe()`!
+3. Только если введена чистая последовательность из 4–12 цифр и нажато `=`, вызывается `unlockOrWipe(candidate)`. И вот там уже честно отрабатывают `HMAC` проверки Panic PIN и оба слота `PBKDF2` за постоянное время (в фоне на `cryptoExecutor` с передачей колбэка в JS, чтобы UI-поток WebView не замерзал), а если оба слота вернули ошибку тега `AEADBadTagException` — калькулятор просто оставляет введённое число на дисплее, как делает любой обычный калькулятор при нажатии `4815=`.
+
+Для `proguard-rules.pro` под AGP 9.1 при включении `isMinifyEnabled = true` и `isShrinkResources = true` необходим следующий точный набор правил, иначе R8 в full-mode вырежет методы моста или обфусцирует их имена:
+
+```proguard
+# Сохраняем JavascriptInterface аннотацию и все методы моста
+-keepattributes JavascriptInterface
+-keepattributes *Annotation*
+
+-keepclassmembers class com.example.WebAppInterface {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keep class com.example.WebAppInterface { *; }
+
+# На случай сериализации моделей/ответов в JSON и BroadcastReceiver'ов
+-keep class com.example.TankAlarmReceiver { *; }
+-keep class com.example.WaterTileService { *; }
+```
+
+---
+
+**Блок Б. Gemini API без вшитых ключей + Фото на Redmi 13C:**
+
+**6. Нюанс ключей `AIza...` vs `AQ...`, автоподгрузка моделей, `thinkingConfig` и перенос сети в Kotlin:**
+
+Здесь кроется важнейшая инженерная деталь, о которую часто спотыкаются:
+* Стандартные ключи Google AI Studio начинаются с `AIza...` и отлично работают с `https://generativelanguage.googleapis.com/v1beta/models`.
+* Ключи, начинающиеся с `AQ...` (например, `AQ.Ab8RN6...`), — это экспресс-ключи Google Cloud / Vertex AI Express Mode! Если отправить такой ключ в `generativelanguage.googleapis.com`, сервер часто возвращает `400 API key not valid`, так как они предназначены для эндпоинта `https://aiplatform.googleapis.com/v1beta1/publishers/google/models` (либо требуют передачи в заголовке `x-goog-api-key`). Поэтому в нативном HTTP-прокси нужно передавать ключ в заголовке `x-goog-api-key` (а не в открытом query-параметре URL, чтобы ключ случайно не осел в логах исключений URL!), а при префиксе `AQ.` иметь автоматический фоллбэк на эндпоинт Vertex Express, если AI Studio вернул 400/403.
+
+**Почему и `GET /models`, и `POST :generateContent` обязательно нужно перенести из WebView `fetch()` в нативный Kotlin (`HttpURLConnection`)?**
+Да, переносить нужно однозначно:
+1. Вы полностью избавляетесь от CORS preflight (`OPTIONS`) запросов, которые удваивают задержку на мобильном интернете в Чернигове.
+2. В WebView при обрыве связи или ошибке в объекте `Error` может засветиться URL с ключом. В Kotlin на `networkExecutor` вы жёстко задаёте `connectTimeout = 15_000`, `readTimeout = 45_000` и передаёте `x-goog-api-key` строго в HTTP-заголовке.
+3. По фильтрации списка моделей из `GET /v1beta/models`: фильтруйте массив `models` по условию `supportedGenerationMethods.contains("generateContent")` и исключайте узкоспециализированные модели (`!name.contains("tts") && !name.contains("embedding") && !name.contains("imagen") && !name.contains("robotics") && !name.contains("aqa")`). В современных линейках Gemini (2.5, 3.x, 4.x) все основные текстовые модели с `generateContent` являются нативно мультимодальными (принимают `inlineData` с `image/jpeg`), поэтому единый отфильтрованный список отлично подходит и для дропдауна Тренера, и для Фотографа, позволяя пользователю выбрать, например, быструю `flash`-модель для фото еды и глубокую reasoning-модель для анализа ЦНС.
+
+**Универсальная сборка `generationConfig` и авто-фоллбэк при HTTP 400:**
+Разные поколения моделей Gemini по-разному реагируют на параметры размышления:
+* Новые серии (`gemini-3...`, `gemini-4...`, такие как `gemini-4-hydrogen` или `gemini-3.1-flash-lite`) используют строковый параметр `thinkingConfig: { thinkingLevel: "HIGH" }` (или `"LOW"` для быстрого распознавания фото еды!).
+* Серия `gemini-2.5-flash` и `gemini-2.5-pro` исторически опирается на числовой `thinkingConfig: { thinkingBudget: 8192 }` (или `1024` для быстрых задач), а на `thinkingLevel` на старых ревизиях API может ответить `400 INVALID_ARGUMENT: Unknown name "thinkingLevel"`.
+* Модели `gemini-2.0-flash` и старше вообще не поддерживают `thinkingConfig` и бросают HTTP 400 при его наличии.
+
+Самый железобетонный паттерн в `cyberpunk_ai.js` — формировать конфиг по семейству модели **плюс** делать один прозрачный автоматический ретрай без `thinkingConfig`, если API вернул статус `400`:
+
+```javascript
+function buildGenerationConfig(modelId, role /* 'coach' | 'vision' */) {
+    const base = { temperature: role === 'vision' ? 0.2 : 0.6 };
+    const m = (modelId || '').toLowerCase();
+
+    if (m.includes('gemini-3') || m.includes('gemini-4')) {
+        base.thinkingConfig = { thinkingLevel: role === 'vision' ? 'LOW' : 'HIGH' };
+    } else if (m.includes('gemini-2.5')) {
+        base.thinkingConfig = { thinkingBudget: role === 'vision' ? 1024 : 8192 };
+    }
+    return base;
+}
+
+async function callGeminiSafe(apiKey, modelId, contents, role) {
+    const cleanModel = modelId.replace(/^models\//, '');
+    const payload = {
+        contents,
+        generationConfig: buildGenerationConfig(cleanModel, role)
+    };
+
+    let res = await nativeGeminiPost(apiKey, cleanModel, payload);
+    // Если модель не переварила thinkingConfig — мгновенный ретрай без него, не начисляя штраф карантина!
+    if (res.status === 400 && payload.generationConfig.thinkingConfig) {
+        delete payload.generationConfig.thinkingConfig;
+        res = await nativeGeminiPost(apiKey, cleanModel, payload);
+    }
+    return res;
+}
+```
+
+**7. Нативный пайплайн сжатия фото еды на Helio G85 (Защита от OOM в WebView):**
+
+Категорически откажитесь от передачи сырого 5–8 МБ фото в WebView через `<input type="file">` и `FileReader.readAsDataURL`! Когда камера Redmi 13C отдаёт 50-мегапиксельный или 12-мегапиксельный кадр ($$4080 \times 3072$$ пикселей), декодирование его в `<canvas>` внутри Chromium WebView требует $$4080 \times 3072 \times 4 \approx 50\,\text{MB}$$ непрерывной неуправляемой памяти плюс две копии Base64-строки по 10 МБ в V8 Heap. На устройстве с 4 ГБ RAM под HyperOS это прямой путь к мгновенному убийству рендерера WebView (`onRenderProcessGone`).
+
+Правильное решение: вместо `WebChromeClient.onShowFileChooser` сделайте прямой вызов `AndroidBridge.pickAndCompressFoodPhoto()`. Kotlin открывает системный `GetContent("image/*")` (под защитой `launchExternalSystemFlow` из Пункта 1), затем в фоновом потоке читает `InputStream` через `contentResolver` в два прохода:
+1. Первый проход с `inJustDecodeBounds = true` узнаёт размеры без аллокации памяти.
+2. Считает `inSampleSize` (степень двойки), декодирует уменьшенный `Bitmap` в `RGB_565` (в 2 раза меньше RAM, чем `ARGB_8888`, прозрачность для фото еды не нужна!), читает EXIF-поворот (`ExifInterface`), масштабирует по длинной стороне ровно до `1024px` и сжимает в `JPEG` с качеством `80`.
+
+В итоге в WebView прилетает аккуратный Base64 весом **110–160 КБ** (в 40 раз меньше оригинала!), что экономит оперативную память, ускоряет отправку через мобильную сеть в 20 раз и тратит минимум токенов Vision-модели (Gemini внутри всё равно тайлит большие картинки или даунскейлит стандартный кадр).
+
+```kotlin
+fun decodeAndCompressUriToBase64(context: Context, uri: Uri, maxSide: Int = 1024): String? {
+    val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boundsOpts) }
+    if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return null
+
+    var sampleSize = 1
+    while (boundsOpts.outWidth / (sampleSize * 2) >= maxSide || boundsOpts.outHeight / (sampleSize * 2) >= maxSide) {
+        sampleSize *= 2
+    }
+
+    val decodeOpts = BitmapFactory.Options().apply {
+        inSampleSize = sampleSize
+        inPreferredConfig = Bitmap.Config.RGB_565
+    }
+    val subsampled = context.contentResolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, decodeOpts)
+    } ?: return null
+
+    // Учитываем EXIF ориентацию камеры Xiaomi/Redmi
+    val rotation = context.contentResolver.openInputStream(uri)?.use { input ->
+        val exif = androidx.exifinterface.media.ExifInterface(input)
+        when (exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, 1)) {
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+    } ?: 0f
+
+    val maxDim = maxOf(subsampled.width, subsampled.height).toFloat()
+    val scale = if (maxDim > maxSide) maxSide / maxDim else 1f
+    val matrix = android.graphics.Matrix().apply {
+        postScale(scale, scale)
+        if (rotation != 0f) postRotate(rotation)
+    }
+
+    val finalBitmap = Bitmap.createBitmap(subsampled, 0, 0, subsampled.width, subsampled.height, matrix, true)
+    if (finalBitmap !== subsampled) subsampled.recycle()
+
+    val baos = java.io.ByteArrayOutputStream(163840)
+    finalBitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+    finalBitmap.recycle()
+
+    return android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
+}
+```
+*(Примечание: для `ExifInterface` добавьте крошечную стандартную зависимость `androidx.exifinterface:exifinterface:1.3.7`, либо парсите ориентацию через `Cursor` `MediaStore.Images.ImageColumns.ORIENTATION` вообще без зависимостей).*
+
+---
+
+**Блок В. Чернигов, HyperOS (Android 15), UI/UX и Вода:**
+
+**8. Погода и Радар тревог для города Чернигова:**
+
+* **Погода (`api.open-meteo.com`):** жёстко зафиксируйте координаты центра Чернигова: `latitude=51.4982&longitude=31.2893&timezone=Europe%2FKyiv` и в шапке/виджете выводите чёткое название **«Чернигов»**.
+* **Воздушные тревоги:** Вы совершенно правы насчёт `ubilling.net.ua/aerialalerts/` — он агрегирует только уровень областей (`"Чернігівська область"`), что для Чернигова создаёт ложные срабатывания, когда тревога объявлена локально только в приграничных Новгород-Северском или Корюковском районах, а в самом Чернигове и Черниговском районе тихо (после введения порайонной дифференциации тревог в Черниговской области это критично!). Полностью открытых официальных API по громадам/районам без ключа сейчас нет из-за защиты от скрейпинга, поэтому идеальная двухконтурная схема выглядит так:
+  1. **По умолчанию (из коробки без ключей):** опрашивается `https://ubilling.net.ua/aerialalerts/`, берётся ключ `"Чернігівська область"`, а в UI плашка честно подписывается `Чернигов (обл.)`, чтобы не вводить пользователя в заблуждение.
+  2. **Точный режим (опциональное поле в Настройках «Токен alerts.in.ua»):** если пользователь вставил бесплатный токен `alerts.in.ua`, нативный сетевой слой запрашивает компактный эндпоинт активных тревог `https://api.alerts.in.ua/v1/alerts/active.json` с заголовком `Authorization: Bearer <TOKEN>` и проверяет иерархию для Чернигова: активна ли тревога на уровне всей области, `Чернігівський район` или непосредственно `Чернігівська територіальна громада` (`location_uid` города/громады). В этом режиме бейдж в UI переключается на точное `г. Чернигов`.
+
+**9. HyperOS (Android 15): Иконка плитки, Батарея, Баг полуночной воды и Тихие часы:**
+
+* **Иконка Quick Settings Tile:** Полностью подтверждаю! В HyperOS и Android 13–15 система рендерит иконку `TileService` исключительно как альфа-маску (`tint`). Использование растрового JPG внутри `@drawable/ic_launcher_foreground` даёт непрозрачный прямоугольник (сплошной белый/синий квадрат в шторке). Создайте чистый монохромный вектор `res/drawable/ic_water_tile.xml` (24×24dp, белый `#FFFFFF` силуэт капли на прозрачном фоне) и пропишите его в `AndroidManifest.xml` для `WaterTileService`.
+
+```xml
+<!-- res/drawable/ic_water_tile.xml -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2.69l5.66,5.66a8,8 0 1,1 -11.31,0z"/>
+</vector>
+```
+
+* **`BOOT_COMPLETED` и экраны энергосбережения HyperOS:**
+  Поскольку основная база зашифрована в `tank_state.bin` и до ввода PIN-кода после перезагрузки телефона приложение не знает персональных данных, `BOOT_COMPLETED` ресивер должен быть максимально стерильным (и иметь `android:directBootAware="false"`). Достаточно сохранить в нешифрованных `SharedPreferences` только обезличенный флаг `water_reminder_enabled: Boolean` и timestamp следующего будильника (либо перепланировать стандартный дневной слот на 09:00 утра с нейтральным текстом уведомления вроде `Системная проверка` или `Таймер гидратации` с `VISIBILITY_SECRET`).
+  Для HyperOS на Redmi 13C в Настройки приложения добавьте две сервисные кнопки с железобетонным `try/catch` фоллбэком (так как Xiaomi меняет имена внутренних Activity между версиями HyperOS 1.0 и 2.0):
+  1. Отключение экономии заряда: `Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))`.
+  2. Автозапуск и фоновая активность HyperOS: попытка открыть `ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")`, при `ActivityNotFoundException` или `SecurityException` — fallback на `Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))`. Все эти вызовы оборачивайте в `launchExternalSystemFlow` из Пункта 1!
+
+* **Исправление бага ночной воды (`WaterSyncBus` vs `checkDailyReset`) и Тихие часы:**
+  Сейчас порядок вызовов ломает консистентность истории: если пользователь нажал плитку `+250 мл` в `23:55` (`day = "2026-11-14"`), а открыл приложение утром `2026-11-15`, то `checkDailyReset()` сначала закрывает вчерашний день с неполной суммой воды, а затем `syncWaterFromNative()` кидает вчерашние 250 мл либо в сегодняшний счётчик, либо в `events` мимо архива `dailyHistory["2026-11-14"]`.
+  Правильный алгоритм в `app.js`:
+  1. При входе в Слот 0 **сначала** вызывается `syncWaterFromNative()`, но каждый элемент очереди раскладывается **строго по своему полю `item.day` (`YYYY-MM-DD`)**! Если `item.day === todayStr`, объём прибавляется к `AppState.water`. Если `item.day < todayStr`, объём напрямую дописывается в `AppState.dailyHistory[item.day].water = (AppState.dailyHistory[item.day]?.water || 0) + item.ml` (создавая запись дня, если её ещё нет) плюс фиксируется в `events` с оригинальным `item.ts`.
+  2. Только **после** полного дренажа нативной очереди и `ackWaterQueue` вызывается `checkDailyReset()`.
+  3. **Тихие часы для будильника воды:** заложите в Kotlin (`WaterTileService` и `MainActivity`) тихий интервал **с 22:30 до 08:30**. При расчёте `triggerAtMillis = now + 2 * 3600_000L` проверяйте `Calendar` результата: если расчётное время попадает в интервал `[22:30 .. 23:59]` или `[00:00 .. 08:29]`, автоматически переносите будильник на **08:30 утра ближайшего наступающего дня**! Тогда глоток воды в 23:00 или нажатие плитки ночью никогда не разбудит пользователя в 01:00 ночи и не испортит метрику сна для Body Battery.
+
+**10. Android 15 Edge-to-Edge без белых полос, клавиатура IME и иерархия кнопки Back:**
+
+На `targetSdk = 36` Android 15 принудительно включает Edge-to-Edge. Чтобы навсегда убрать белые вспышки при холодном старте и светлые системные бары при дневной теме HyperOS:
+1. В `res/values/themes.xml` (и `values-night/themes.xml`) задайте `<item name="android:windowBackground">#0B0E14</item>` и `<item name="android:navigationBarColor">@android:color/transparent</item>`.
+2. В `MainActivity.onCreate()` вызывайте `enableEdgeToEdge` с явно зафиксированным `SystemBarStyle.dark`:
+
+```kotlin
+enableEdgeToEdge(
+    statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+    navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+)
+```
+
+3. В Compose-обёртке вокруг `AndroidView` примените модификатор `.fillMaxSize().background(Color(0xFF0B0E14)).systemBarsPadding().imePadding()` и обязательно задайте `webView.setBackgroundColor(android.graphics.Color.parseColor("#0B0E14"))`. Благодаря связке `.systemBarsPadding().imePadding()` при появлении экранной клавиатуры Gboard на Redmi 13C контейнер `WebView` плавно ужмётся по высоте, и поле `#chatInput` или модалка ввода веса продукта автоматически окажется прямо над клавиатурой без перекрытия!
+
+4. **Идеальная цепочка перехвата системного жеста «Назад» (`OnBackPressedCallback`):**
+В `MainActivity` зарегистрируйте `onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) { ... })`, который делегирует решение в JS: `webView.evaluateJavascript("window.handleHardwareBack && window.handleHardwareBack()") { result -> ... }`.
+Внутри `window.handleHardwareBack()` выстраивается строгая иерархия возвратов:
+   * Шаг 1: Если открыт `lockscreen-sos-mode` → вызываем `exitLockscreenSOS()`, возвращаем `"HANDLED"`.
+   * Шаг 2: Если приложение заблокировано (`!VaultSession.unlocked`) → возвращаем `"MINIMIZE"`, а Kotlin по этому ответу вызывает `moveTaskToBack(true)` (сворачивает приложение без уничтожения `WebView`, чтобы следующий запуск был мгновенным).
+   * Шаг 3: Если открыто модальное окно (`#appModal` видимо) → закрываем модалку, возвращаем `"HANDLED"`.
+   * Шаг 4: Если открыта детальная карточка/редактор кастрюли → сворачиваем карточку кастрюли к списку еды, возвращаем `"HANDLED"`.
+   * Шаг 5: Если активен любой подмодуль кроме главного дашборда (`activeModule !== 'dashboard'`) → переключаем на `'dashboard'`, возвращаем `"HANDLED"`.
+   * Шаг 6: Если пользователь уже на `'dashboard'` → вызываем `lockToStealth()` (блокируем сейф в калькулятор) **или** сразу `moveTaskToBack(true)` (при сворачивании сработает `onPause()`, который и так мгновенно заблокирует приложение в Stealth!). Второй вариант (`moveTaskToBack(true)` с авто-блокировкой в `onPause`) ощущается пользователем максимально естественно для Android.
+
+---
+
+**Блок Г. Биометрия, Еда, Голос, Стего, QR и Хранение данных:**
+
+**11. Голосовой ввод еды (`food_pots.js`):**
+
+Однозначно **выкидывайте `webkitSpeechRecognition`** — в Android System WebView этот API не поддерживается и лишь создаёт неработающую кнопку. При этом добавлять разрешение `RECORD_AUDIO` в `AndroidManifest.xml` тоже **не нужно** (для приватного стелс-приложения с иконкой/экраном калькулятора запрос микрофона в разрешениях выглядит крайне подозрительно!).
+
+Оптимальное решение из двух шагов:
+1. На самой клавиатуре Gboard / Xiaomi на Redmi 13C уже есть встроенная иконка микрофона (диктовка прямо в текстовое поле парсера еды, включая оффлайн-пакеты русского языка в Gboard).
+2. Если хочется оставить крупную удобную кнопку `🎤` в UI еды — проверьте при инициализации в Kotlin наличие системного обработчика: `packageManager.queryIntentActivities(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH), 0).isNotEmpty()`. Если на телефоне сервис есть, кнопка `🎤` отображается и вызывает нативный `RecognizerIntent.ACTION_RECOGNIZE_SPEECH` (под защитой `launchExternalSystemFlow` из Пункта 1, не требуя `RECORD_AUDIO` в вашем манифесте!). Если же приложение запущено в «стерильном» оффлайн-профиле без голосовых сервисов — мост сообщает `canUseVoice = false`, и кнопка `🎤` аккуратно скрывается через `display: none`, не оставляя мёртвых элементов в интерфейсе.
+
+**12. Субкадровая точность PVT и бездрейфовые таймеры Изометрии / NSDR:**
+
+* **Калибровка PVT под экран 60–90 Гц Redmi 13C:**
+  Вы абсолютно точно заметили погрешность! Когда внутри `setTimeout` меняется класс/цвет кнопки стимула и тут же вызывается `pvtStartPerf = performance.now()`, браузер фиксирует время в JS-таске **до** пересчёта стилей, компоновки и реального вывода кадра на матрицу дисплея (что даёт систематическое завышение времени реакции на 8–20 мс и лишний джиттер для MAD). Классический паттерн психофизиологических тестов в браузере — двойной `requestAnimationFrame` (первый `rAF` срабатывает перед началом композитинга кадра со сменой цвета, а старт таймера на самом начале отрисовки даёт привязку к реальному `vblank`):
+
+```javascript
+function triggerPvtStimulus() {
+    pvtBtn.classList.add('stimulus-active');
+    pvtBtn.textContent = 'ЖМИ!';
+    // Привязываем отсчёт к моменту фактической подготовки кадра к выводу на экран
+    requestAnimationFrame((frameTimestamp) => {
+        pvtStartPerf = frameTimestamp || performance.now();
+        pvtState = 'WAITING_TAP';
+    });
+}
+```
+А в обработчике `pointerdown` используйте `event.timeStamp` (если он в той же шкале `performance.now()`, т.е. `event.timeStamp > 0 && Math.abs(performance.now() - event.timeStamp) < 500`, иначе `performance.now()`): `event.timeStamp` фиксируется ядром Android в момент касания тачскрина *до* очереди событий главного потока JS, что на бюджетном Helio G85 убирает ещё 5–12 мс джиттера тач-пайплайна!
+
+* **Бездрейфовые таймеры Изометрии и 15-мин NSDR + звуковой гонг:**
+  `setInterval(..., 1000)` со счётчиком `secondsLeft--` гарантированно отстаёт при троттлинге CPU на энергосберегающих ядрах Cortex-A55. Переведите оба таймера на расчёт дедлайна: `const endAt = Date.now() + durationMs;`, а в тике `setInterval(..., 250)` вычисляйте `const remSec = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));`. Поскольку в `MainActivity` уже включён `FLAG_KEEP_SCREEN_ON`, экран во время планки или NSDR не гаснет, если приложение открыто. Для надёжного сигнала окончания (так как HyperOS действительно режет `navigator.vibrate` в режиме экономии энергии) синтезируйте мягкий колокольчик/гонг на чистом `AudioContext` (синусоида $$432\,\text{Hz}$$ или $$528\,\text{Hz}$$ с плавным экспоненциальным затуханием `exponentialRampToValueAtTime` за 1.5 секунды — 0 байт внешних аудиофайлов и 100% оффлайн-срабатывание!), создавая/разблокируя `AudioContext` прямо в обработчике клика по кнопке «Старт».
+
+**13. Аналитика ЦНС, Компакция слота 4 МБ, Безопасный QR, XSS-защита и новая схема БАДов:**
+
+Разберём все четыре подпункта:
+
+1. **Фильтр `CNSAnalytics.buildDailyRecords()`:**
+   Для **корреляционного анализа 14+ дней** (Spearman $$\rho$$ + сдвиг Ходжеса–Лемана + перестановочный тест + Benjamini–Hochberg FDR $$q = 0.10$$) **обязательно оставляйте строгий парный фильтр** (день включается в матрицу перестановок только если есть реальный лог сна И реальный утренний PVT). Если подставлять туда импутированные средние или вчерашний PVT, вы искусственно сгладите дисперсию и получите ложноположительные корреляции (или убьёте чувствительность перестановочного теста). А вот для **оперативного расчёта сегодняшнего `Body Battery`** на дашборде (чтобы утром до прохождения PVT или при случайном пропуске теста у пользователя не ломался расчёт авто-DELOAD изометрии) используйте мягкий фоллбэк: если сегодня PVT ещё не пройден, компонент Z-score ЦНС принимает нейтральное значение $$Z = 0$$ с визуальной пометкой `PVT не пройден (точность ЦНС снижена)`.
+
+2. **Стратегия компакции под лимит 4 МБ и ускорение `StegoVault` PNG:**
+   На флеш-памяти eMMC 5.1 и CPU Helio G85 побайтовое внедрение LSB в огромный массив пикселей в JS становится заметным уже при размере JSON свыше 400–500 КБ. Чтобы база оставалась молниеносной даже через 5 лет ежедневного использования и занимала не более **150–250 КБ** в несжатом виде (и ~35 КБ после `deflate-raw`):
+   * `events` (сырой лог действий): хранить скользящее окно за последние **180 дней** (но не более `3000` записей). Всё старше 180 дней уже агрегировано в суточные сводки.
+   * `pvtHistory` (детальные массивы миллисекунд по 5 попыткам): хранить детальные попытки за **180 дней** (`max 500` сессий), а для более старых дат оставлять только агрегированные `medianMs` и `madMs` внутри `dailyHistory[date]`.
+   * `sleepLogs` и `dailyHistory`: компактная запись 1 дня весит всего ~180 байт; за **3 года (1095 дней)** это всего ~195 КБ! Ограничьте `dailyHistory` и `sleepLogs` окном в `1100` дней (3 года).
+   * `aiCache`: максимум `30` последних ответов с автоочисткой по TTL 7 дней.
+   * Для **PNG-стеганографии (`StegoVault`)**: поставьте мягкий предел на размер уже сжатого `deflate-raw` буфера в **512 КБ** (это вмещает ~2.5 МБ текста и укладывается в квадратный PNG размером всего $$1350 \times 1350$$ пикселей — кодируется на Helio G85 менее чем за 0.6 секунды!). Если данных когда-либо станет больше, предлагайте бинарный экспорт `.tank`, который пишет `AES-GCM` поток напрямую без оверхеда пикселей Canvas.
+
+3. **Защита от краша `qrcode.min.js` (`Too long data`) и приватность мед-карты:**
+   Классический `qrcode.min.js` при кириллице кодирует каждый символ UTF-8 двумя байтами (режим Byte mode), и при уровне коррекции ошибок `M` или `H` падает с исключением уже на 600–900 символах русского текста!
+   Решение:
+   * Добавьте на экране экстренного QR чекбокс **«Включить хронические диагнозы в QR»** (по умолчанию **выключен** — в базовый компактный экстренный профиль попадают только критические для скорой помощи поля: Группа крови/резус, Критические аллергии на препараты и Контакт для связи).
+   * Перед вызовом `new QRCode(...)` преобразуйте строку через `new TextEncoder().encode(text)`: если длина `uint8Array.length > 700` байт, принудительно переключайте `correctLevel: QRCode.CorrectLevel.L` (вмещает до ~2900 байт на версии 40), а если превышает `1800` байт (на мелком экране плотный QR версии 40 всё равно плохо читается камерами) — безопасно обрезайте строку по границе символа с многоточием и показывайте предупреждение `Текст сокращён для надёжного чтения сканером`, обернув генерацию в `try / catch`.
+
+4. **Устранение инъекций кавычек `onclick` + Архитектура `suppMeta` (Магний глицинат, Таурин, Креатин, архивация):**
+   Все динамические списки в `food_pots.js`, `cns_biometrics.js` и БАДах переведите со строковых вызовов `onclick="selectFood('${escapeHtml(name)}')"` (которые ломаются на названиях вроде `Овсянка 'Геркулес'`) на чистейшее делегирование событий по `data-id` на родительском контейнере! Каждому продукту и каждому БАДу присваивается стабильный латинский/числовой `id` (для новых пользовательских — `'custom_' + Date.now().toString(36)`).
+
+   Для стека БАДов используйте словарь `AppState.suppMeta`, разделяющий метаданные препарата и лог приёмов в `events`. Это позволяет мгновенно добавлять новые банки, менять дозировку и мягко скрывать закончившиеся добавки (`archived: true`), **вообще не ломая историческую аналитику `CNSAnalytics`** за прошлые недели (так как корреляционный движок сможет прочитать человекочитаемое имя даже у архивного `suppId`!):
+
+```javascript
+const DEFAULT_SUPP_META = {
+    magnesium_glycinate: {
+        id: 'magnesium_glycinate',
+        name: 'Магний глицинат',
+        defaultDose: '400 мг',
+        stockCount: 60,
+        timing: 'evening',
+        archived: false
+    },
+    taurine: {
+        id: 'taurine',
+        name: 'Таурин',
+        defaultDose: '1000 мг',
+        stockCount: 90,
+        timing: 'any',
+        archived: false
+    },
+    creatine_mono: {
+        id: 'creatine_mono',
+        name: 'Креатин моногидрат',
+        defaultDose: '5 г',
+        stockCount: 100,
+        timing: 'daily',
+        archived: false
+    },
+    omega3: {
+        id: 'omega3',
+        name: 'Омега-3 (EPA/DHA)',
+        defaultDose: '1000 мг',
+        stockCount: 60,
+        timing: 'meal',
+        archived: false
+    },
+    vit_d3: {
+        id: 'vit_d3',
+        name: 'Витамин D3 + K2',
+        defaultDose: '2000 МЕ',
+        stockCount: 60,
+        timing: 'morning',
+        archived: false
+    }
+};
+
+// Делегирование без риска XSS и сломанных кавычек
+document.getElementById('suppListContainer').addEventListener('click', (e) => {
+    const btnTake = e.target.closest('[data-action="take-supp"]');
+    if (btnTake && assertVaultUnlocked()) {
+        takeSupplement(btnTake.dataset.suppId);
+        return;
+    }
+    const btnArchive = e.target.closest('[data-action="toggle-archive-supp"]');
+    if (btnArchive && assertVaultUnlocked()) {
+        toggleArchiveSupplement(btnArchive.dataset.suppId);
+    }
+});
+```
+В UI инвентаря БАДов по умолчанию рендерятся только карточки с `!supp.archived`, внизу списка ставится компактная кнопка **«+ Добавить свою добавку»** (название, разовая доза, остаток порций) и тоггл **«Показать архивные / закончившиеся (N)»**, откуда любую временно скрытую добавку можно вернуть в активный стек одним нажатием, когда докуплена новая банка.
+
+---
+
+**Резюме — что упростить и выкинуть для максимальной скорости на Redmi 13C:**
+
+* **Убрать из манифеста и кода:** мёртвый `webkitSpeechRecognition` (заменить проверкой системного `RecognizerIntent` без `RECORD_AUDIO`), обязательный ввод 3 PIN-кодов при первом запуске (оставить только 1 основной PIN со скрытым заполнением обоих слотов `SecureRandom`), все следы `.env.example` / `BuildConfig` ключей и прямые `fetch()` запросы к Gemini из WebView.
+* **Перенести из JS в нативный Kotlin:** декодирование и ресайз фото еды до `1024px RGB_565 JPEG 80%` (спасает 4 ГБ RAM от OOM), сетевые вызовы Gemini API с авто-фоллбэком `thinkingConfig`, хранение сессионного `AES`-ключа в зануляемом `ByteArray` с подавлением `onPause()` только через строгий TTL-флаг системного пикера при включённом экране.
+* **Отключить лишние вычисления на старте и в калькуляторе:** не гонять 240 000 итераций `PBKDF2` на выражениях с математическими знаками (`2+2=`), добавить `android:configChanges` в `MainActivity`, чтобы WebView никогда не перезагружал DOM и JS-движок при смене конфигурации HyperOS.
