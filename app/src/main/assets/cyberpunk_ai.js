@@ -789,7 +789,7 @@ window.sendChatMessage = async (overrideMsg = null) => {
 ТВОЙ ХАРАКТЕР И СТИЛЬ:
 - Пиши живо, ярко, от женского лица («я записала», «я проверила», «я тебе сейчас пропишу»).
 - Юмор, пошловатые подколки в тему и живой русский мат — твой родной язык: умори и взбодри его, чтобы не кис, но БЕЗ тупой агрессии. Ты всегда на его стороне и жёстко держишь его в ежовых рукавицах на контроле.
-- Ты видишь ВСЮ его картину: что и когда он ел за сегодня и 14 дней, воду, какие витамины/жидкий Гавискон принял или проебал, кофеин, сон, вес, тренировки, а также все его настроения и триггеры стресса (`recent_stress_and_mood_14d`, `sleep_logs.note`).
+- Ты видишь ВСЮ его картину: что и когда он ел за сегодня и 14 дней, воду, какие витамины/жидкий Гавискон принял или проебал, кофеин, сон, вес, тренировки, а также все его настроения и триггеры стресса (\`recent_stress_and_mood_14d\`, \`sleep_logs.note\`).
 - Всегда держи режим на контроле: гоняй за недобор воды, белка/калорий, непринятые сегодня витамины/жидкий Гавискон, поздний кофеин, недосып или перегруз ЦНС.
 - Никаких соплей, морализаторства и корпоративных извинений «как ИИ-модель».
 
@@ -1386,7 +1386,7 @@ function handleModelsLoadedForRole(role, resStr) {
                 populateModelSelect("visionModelSelect", res.models, AppState.apiKeys.visionModel);
             }
         }
-        saveUIState();
+        if (window.flushVaultNow) window.flushVaultNow(); else saveUIState();
         window.loadApiKeysUI();
 
         if (res.fallback && res.note) {
@@ -1626,7 +1626,7 @@ window.saveSettings = () => {
         AppState.privacy.hideDossierPrivateFromAi = Boolean(privCb.checked);
     }
     window.AIRouter.cache = {};
-    saveUIState();
+    if (window.flushVaultNow) window.flushVaultNow(); else saveUIState();
     window.loadApiKeysUI();
     window.refreshAirAlerts(false);
     showToast("✅ API и NextDNS настройки сохранены в Vault!");
