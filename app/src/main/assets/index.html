@@ -161,6 +161,8 @@
                         <div id="sosSuggestion" class="text-danger text-sm font-bold mb-2" style="display:none;"></div>
                         <p class="text-xs text-muted mb-1">Быстрая фиксация триггера стресса:</p>
                         <div id="cnsTriggerChips" class="flex flex-wrap gap-1"></div>
+                        <p class="text-xs text-muted mt-2 mb-1">Настроение сейчас (1 нажатие):</p>
+                        <div id="dashMoodChips" class="flex flex-wrap gap-1"></div>
                     </div>
 
                     <div class="card mb-2">
@@ -320,8 +322,11 @@
                         </div>
 
                         <div class="input-group">
-                            <label>Подсказка для фотографа (опционально)</label>
-                            <input type="text" id="photoContextInput" placeholder="Напр: тарелка 24см, жарил на масле, под кашей свинина">
+                            <label>Подсказка для фотографа (опционально, можно голосом)</label>
+                            <div class="flex gap-2">
+                                <input type="text" id="photoContextInput" placeholder="Напр: тарелка 24см, жарил на масле, под кашей свинина" style="flex:1;">
+                                <button type="button" class="btn btn-primary" style="width:auto; padding:0 14px;" id="btnVoicePhoto" onclick="startVoicePhotoHint()" title="Голосовой ввод">🎤</button>
+                            </div>
                         </div>
 
                         <div id="photoPreviewWrap" class="flex-col gap-2" style="display:none;">
@@ -384,6 +389,7 @@
                             <button class="btn btn-primary" style="width:auto;" onclick="addCustomWater()">Добавить</button>
                         </div>
                         <p id="waterTileSyncInfo" class="text-xs text-muted mt-1">Шторка QuickSettings (+250 мл) синхронизируется по дате. Тихие часы: 22:30–08:30.</p>
+                        <div id="todayWaterLog" class="flex-col gap-1 mt-2 text-left text-xs text-muted"></div>
                     </div>
                 </div>
 
@@ -415,16 +421,32 @@
                     </div>
 
                     <div class="card mb-2">
+                        <h3 style="margin-bottom:6px;">🎭 Быстрое настроение и состояние</h3>
+                        <p class="text-xs text-muted mb-1">1 нажатие — и Тренер/Фотограф видят твоё состояние с отметкой времени:</p>
+                        <div id="cnsMoodChips" class="flex flex-wrap gap-1"></div>
+                    </div>
+
+                    <div class="card mb-2">
                         <h3>📊 График ресурса ЦНС (14 дней)</h3>
                         <div style="background:#0d1117; padding:8px; border-radius:8px; border:1px solid var(--border);">
                             <canvas id="cnsChart" style="display:block; width:100%; height:180px;"></canvas>
                         </div>
                     </div>
 
-                    <div class="card">
+                    <div class="card mb-2">
                         <h3>🧠 Инсайты (Spearman + FDR)</h3>
                         <p class="text-xs text-muted mb-2">Без фантазий ИИ: только математически подтвержденные сдвиги PVT (мин. 14 парных дней).</p>
                         <div id="cnsInsightsList" class="flex-col gap-2 text-sm"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="flex justify-between align-center mb-1 gap-2">
+                            <h3 style="margin:0;">📜 Статистика по дням и часам</h3>
+                            <select id="statsDaySelect" style="width:auto; min-height:36px; padding:4px 8px; font-size:12px;" onchange="renderDailyStatsLog()"></select>
+                        </div>
+                        <p class="text-xs text-muted mb-2">Вода, еда, витамины/фарма, кофеин, сон и тренировки с точным временем (в т.ч. через ИИ-Тренера).</p>
+                        <div id="dailyStatsSummary" class="text-xs mb-2"></div>
+                        <div id="dailyStatsTimeline" class="flex-col gap-1 text-xs"></div>
                     </div>
                 </div>
 
@@ -518,11 +540,12 @@
                     </div>
                     <div class="card flex-col gap-2" style="min-height: 54vh; display:flex; flex-direction:column;">
                         <div id="chatHistory" style="flex:1; min-height:240px; max-height:52vh; overflow-y:auto; background:#0d1117; padding:10px; border-radius:8px; display:flex; flex-direction:column; gap:10px;">
-                            <div class="text-muted text-sm text-center">Укажи свой Gemini API ключ и выбери модель в ⚙️ Настройки.</div>
+                            <div class="text-muted text-sm text-center">Укажи свой Gemini API ключ в ⚙️ Настройки. Пиши или диктуй 🎤, что съел, выпил (воду/витамины) и во сколько — сама запишу в базу и статистику.</div>
                         </div>
                         <div class="flex gap-2 align-center">
-                            <textarea id="chatInput" rows="2" placeholder="Спроси тренера..." style="flex:1; min-height:48px; resize:none;"></textarea>
-                            <button id="chatSendBtn" type="button" class="btn btn-primary" style="width:auto; min-width:56px;" onclick="sendChatMessage()">🚀</button>
+                            <textarea id="chatInput" rows="2" placeholder="Напиши или надиктуй: вопрос, еда, вода, витамины, сон..." style="flex:1; min-height:48px; resize:none;"></textarea>
+                            <button id="btnVoiceChat" type="button" class="btn btn-outline" style="width:auto; min-width:52px; padding:0 12px;" onclick="startVoiceChat()" title="Голосовой ввод">🎤</button>
+                            <button id="chatSendBtn" type="button" class="btn btn-primary" style="width:auto; min-width:52px;" onclick="sendChatMessage()">🚀</button>
                         </div>
                     </div>
                 </div>
@@ -614,6 +637,11 @@
                             <label>Токен alerts.in.ua (опц., приоритет поверх siren.pp.ua)</label>
                             <input type="password" id="alertsInUaToken" placeholder="Пусто = бесплатный siren.pp.ua (город) + ubilling" onchange="syncApiKeysFromInputs(true)">
                         </div>
+
+                        <label class="flex align-center gap-2 text-xs text-muted" style="cursor:pointer; margin:4px 0;">
+                            <input type="checkbox" id="hidePrivateDossierFromAi" class="checkbox" style="width:18px;height:18px; flex-shrink:0;" onchange="toggleAiPrivacyFilter(this.checked)">
+                            <span>🕵️ Скрывать личные данные досье от ИИ (год, кровь, аллергии, диагнозы, SOS и заметки ко сну)</span>
+                        </label>
 
                         <div class="grid-2 gap-2">
                             <button class="btn btn-primary" onclick="saveSettings()">💾 Сохранить API</button>

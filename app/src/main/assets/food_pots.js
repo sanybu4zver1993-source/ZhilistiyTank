@@ -239,29 +239,26 @@ window.autoParseFood = () => {
     }
 };
 
-// --- Optional Native Speech Recognizer (Zero RECORD_AUDIO manifest permission) ---
-window.initVoiceFoodButton = () => {
-    const btn = document.getElementById("btnVoiceFood");
-    if (!btn) return;
-    let supported = false;
-    if (window.AndroidBridge && window.AndroidBridge.canUseVoiceInput) {
-        try {
-            supported = Boolean(window.AndroidBridge.canUseVoiceInput());
-        } catch (_) {
-            supported = false;
-        }
-    } else {
-        supported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
-    }
-    btn.style.display = supported ? "inline-flex" : "none";
-};
+// --- Native Speech Recognizer (Food, Photographer Hint & Trainer Chat; zero RECORD_AUDIO permission) ---
+let activeVoiceTarget = null;
 
-window.startVoiceFood = () => {
+function launchUnifiedVoiceInput(promptText, targetConfig) {
     if (!window.assertVaultUnlocked()) return;
-    if (window.AndroidBridge && window.AndroidBridge.startVoiceFoodAsync) {
-        window.AndroidBridge.startVoiceFoodAsync("onVoiceFoodResult");
+    activeVoiceTarget = targetConfig;
+
+    if (window.AndroidBridge && window.AndroidBridge.startVoiceInputAsync) {
+        if (window.AndroidBridge.canUseVoiceInput && !window.AndroidBridge.canUseVoiceInput()) {
+            showToast("🎤 Голосовой сервис не найден — используй микрофон клавиатуры");
+            return;
+        }
+        window.AndroidBridge.startVoiceInputAsync(promptText, "onUnifiedVoiceResult");
         return;
     }
+    if (window.AndroidBridge && window.AndroidBridge.startVoiceFoodAsync) {
+        window.AndroidBridge.startVoiceFoodAsync("onUnifiedVoiceResult");
+        return;
+    }
+
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRec) {
         return showToast("Голосовой ввод недоступен на этом устройстве (используй микрофон клавиатуры)");
@@ -271,24 +268,68 @@ window.startVoiceFood = () => {
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
     recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        document.getElementById("smartFoodInput").value = transcript;
-        window.autoParseFood();
+        const transcript = event.results[0]?.[0]?.transcript || "";
+        window.onUnifiedVoiceResult(JSON.stringify({ ok: Boolean(transcript.trim()), text: transcript }));
     };
     recognition.onerror = (event) => showToast("Ошибка голоса: " + event.error);
     recognition.start();
     showToast("🎤 Говори...");
-};
+}
 
-window.onVoiceFoodResult = (resStr) => {
+window.onUnifiedVoiceResult = (resStr) => {
     try {
         const res = JSON.parse(resStr);
-        if (res.ok && res.text) {
-            document.getElementById("smartFoodInput").value = res.text;
-            window.autoParseFood();
-            showToast("🎤 Распознано");
+        if (res.cancelled) return;
+        if (!res.ok || !res.text) {
+            if (res.error) showToast("⚠️ " + res.error);
+            return;
         }
+        const cfg = activeVoiceTarget;
+        if (!cfg || !cfg.inputId) return;
+        const el = document.getElementById(cfg.inputId);
+        if (!el) return;
+
+        const clean = String(res.text).trim();
+        if (cfg.append && el.value.trim()) {
+            el.value = el.value.trim() + " " + clean;
+        } else {
+            el.value = clean;
+        }
+        if (typeof cfg.onAfter === "function") cfg.onAfter(clean);
+        el.focus();
+        showToast("🎤 Распознано");
     } catch (_) {}
+};
+
+window.initVoiceFoodButton = () => {
+    ["btnVoiceFood", "btnVoicePhoto", "btnVoiceChat"].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.style.display = "inline-flex";
+    });
+};
+
+window.startVoiceFood = () => {
+    launchUnifiedVoiceInput("Назови еду и вес...", {
+        inputId: "smartFoodInput",
+        append: false,
+        onAfter: () => { if (window.autoParseFood) window.autoParseFood(); }
+    });
+};
+
+window.onVoiceFoodResult = window.onUnifiedVoiceResult;
+
+window.startVoicePhotoHint = () => {
+    launchUnifiedVoiceInput("Надиктуй подсказку к фото (размер, масло, соус)...", {
+        inputId: "photoContextInput",
+        append: true
+    });
+};
+
+window.startVoiceChat = () => {
+    launchUnifiedVoiceInput("Скажи тренеру (вопрос или что съел/выпил/принял)...", {
+        inputId: "chatInput",
+        append: true
+    });
 };
 
 // --- Native Compressed Food Photo Picker & Camera Capture (1024px RGB_565 JPEG 80%) ---

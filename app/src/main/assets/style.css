@@ -335,6 +335,12 @@ textarea, input[type="text"], input[type="number"], input[type="password"], sele
     border-color: var(--danger);
 }
 
+.chip-btn.active-mood {
+    border-color: var(--primary);
+    background: rgba(187, 134, 252, 0.18);
+    color: var(--primary);
+}
+
 .supp-archived {
     opacity: 0.5;
     border-style: dashed;

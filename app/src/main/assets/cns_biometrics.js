@@ -380,6 +380,58 @@ window.logStressTrigger = (trigger) => {
     showToast(`⚡ Триггер "${trigger}" учтён (ЦНС: ${AppState.bodyBattery}/100)`);
 };
 
+// --- Quick Mood Chips (1-Tap Mood Tracking) ---
+const QUICK_MOOD_PRESETS = [
+    { id: "Бодрый / Кайф", icon: "🔥", label: "Бодрый / Кайф" },
+    { id: "Норм / Ровно", icon: "😐", label: "Норм / Ровно" },
+    { id: "Устал / Разбит", icon: "🪫", label: "Устал / Разбит" },
+    { id: "Злой / На взводе", icon: "🤬", label: "Злой / На взводе" },
+    { id: "Тревожно / Накрыло", icon: "😰", label: "Тревожно / Накрыло" }
+];
+
+function bindMoodChipsDelegation(el) {
+    if (!el || el.dataset.delegated) return;
+    el.dataset.delegated = "1";
+    el.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-mood]");
+        if (!btn) return;
+        window.logMoodState(btn.dataset.mood);
+    });
+}
+
+window.renderMoodChips = () => {
+    const today = window.todayKey ? window.todayKey() : new Date().toISOString().slice(0, 10);
+    const todayMoods = (AppState.events || []).filter(
+        e => e.type === "mood" && (e.day || (e.occurred_at || "").slice(0, 10)) === today
+    );
+    const latestMood = todayMoods.length > 0 ? (todayMoods[todayMoods.length - 1].payload?.mood || "") : "";
+
+    const html = QUICK_MOOD_PRESETS.map(m => {
+        const activeCls = latestMood === m.id ? " active-mood" : "";
+        return `<button type="button" class="chip-btn${activeCls}" data-mood="${escapeHtml(m.id)}">${m.icon} ${escapeHtml(m.label)}</button>`;
+    }).join("");
+
+    ["dashMoodChips", "cnsMoodChips"].forEach(containerId => {
+        const box = document.getElementById(containerId);
+        if (!box) return;
+        bindMoodChipsDelegation(box);
+        box.innerHTML = html;
+    });
+};
+
+window.logMoodState = (moodLabel) => {
+    if (!window.assertVaultUnlocked()) return;
+    const cleanMood = String(moodLabel || "").trim();
+    if (!cleanMood) return;
+    window.haptic(30);
+    const nowTime = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    window.logEvent("mood", { mood: cleanMood, time: nowTime });
+    window.renderMoodChips();
+    if (window.renderDailyStatsLog) window.renderDailyStatsLog();
+    saveUIState();
+    showToast(`🎭 Настроение записано: ${cleanMood} (${nowTime})`);
+};
+
 // --- Sleep & Real CNS 14-day Canvas Chart ---
 window.logSleep = () => {
     if (!window.assertVaultUnlocked()) return;
@@ -389,14 +441,15 @@ window.logSleep = () => {
     if (isNaN(hrs) || hrs <= 0 || hrs > 24) return showToast("Укажи реальные часы сна (0.5–24)!");
 
     const today = window.todayKey();
-    const bb = window.calculateRecoveryScore();
-    AppState.sleepLogs.push({ date: today, ts: Date.now(), hrs, quality, note, score: bb });
-    AppState.dailyHistory[today] = Object.assign({}, AppState.dailyHistory[today] || {}, { bb });
-
+    const sleepEntry = { date: today, ts: Date.now(), hrs, quality, note, score: AppState.bodyBattery || 70 };
+    AppState.sleepLogs.push(sleepEntry);
     window.logEvent("sleep", { hrs, quality, note });
-    window.calculateRecoveryScore();
+    const bb = window.calculateRecoveryScore();
+    sleepEntry.score = bb;
+    AppState.dailyHistory[today] = Object.assign({}, AppState.dailyHistory[today] || {}, { bb });
     saveUIState();
     window.renderCnsDashboard();
+    if (window.renderDailyStatsLog) window.renderDailyStatsLog();
     document.getElementById("sleepNote").value = "";
     showToast(`✅ Сон (${hrs}ч, кач. ${quality}/5) записан!`);
 };
@@ -783,17 +836,19 @@ window.renderSupps = () => {
             const item = meta[key];
             const isChecked = Boolean(AppState.supps[key]);
             const stock = AppState.suppsInventory[key] ?? 0;
+            const unit = item.unit || "шт";
+            const takenTime = isChecked && AppState.suppTakenTimes?.[key] ? ` <span class="text-success font-bold text-xs">✓ ${escapeHtml(AppState.suppTakenTimes[key])}</span>` : "";
             const lotInfo = item.lot ? ` <span class="text-xs text-muted">(${escapeHtml(item.lot)})</span>` : "";
             const archBadge = item.archived ? ` <span class="badge-pill">архив</span>` : "";
             const stockHtml = stock < 10
-                ? `<span class="text-danger font-bold text-xs"> (${stock} шт)</span>`
-                : `<span class="text-muted text-xs"> (${stock} шт)</span>`;
+                ? `<span class="text-danger font-bold text-xs"> (${stock} ${escapeHtml(unit)})</span>`
+                : `<span class="text-muted text-xs"> (${stock} ${escapeHtml(unit)})</span>`;
             const archClass = item.archived ? " supp-archived" : "";
 
             return `
-                <div class="card bg-gray flex gap-2 align-center${archClass}" style="padding:10px; opacity:${isChecked ? 0.55 : (item.archived ? 0.5 : 1)};">
+                <div class="card bg-gray flex gap-2 align-center${archClass}" style="padding:10px; opacity:${isChecked ? 0.65 : (item.archived ? 0.5 : 1)};">
                     <input type="checkbox" id="${prefix}_${escapeHtml(key)}" class="checkbox" data-supp-id="${escapeHtml(key)}" ${isChecked ? "checked" : ""}>
-                    <label for="${prefix}_${escapeHtml(key)}" style="flex:1; cursor:pointer; font-size:13px;">${escapeHtml(item.label)}${lotInfo}${stockHtml}${archBadge}</label>
+                    <label for="${prefix}_${escapeHtml(key)}" style="flex:1; cursor:pointer; font-size:13px;">${escapeHtml(item.label)}${takenTime}${lotInfo}${stockHtml}${archBadge}</label>
                 </div>
             `;
         }).join("") || "<p class='text-xs text-muted'>Нет активных добавок. Нажми ➕ БАД или включи архив.</p>";
@@ -808,25 +863,31 @@ window.toggleSupp = (key, checkedState) => {
         return;
     }
     window.haptic(30);
+    if (!AppState.suppTakenTimes) AppState.suppTakenTimes = {};
     if (checkedState) {
         if ((AppState.suppsInventory[key] || 0) <= 0) {
             showToast("❌ Банка пуста! Пополни остатки или скрой в ⚙️ Банки.");
             window.renderSupps();
             return;
         }
+        const nowTime = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
         AppState.supps[key] = true;
+        AppState.suppTakenTimes[key] = nowTime;
         AppState.suppsInventory[key] -= 1;
         const label = AppState.suppMeta?.[key]?.label || key;
-        window.logEvent("supp_taken", { key, label, remaining: AppState.suppsInventory[key] });
+        const unit = AppState.suppMeta?.[key]?.unit || "шт";
+        window.logEvent("supp_taken", { key, label, time: nowTime, remaining: AppState.suppsInventory[key] });
         if (AppState.suppsInventory[key] < 10) {
-            showToast(`⚠️ Осталось мало: ${AppState.suppsInventory[key]} шт`);
+            showToast(`⚠️ Осталось мало: ${AppState.suppsInventory[key]} ${unit}`);
         }
     } else {
         AppState.supps[key] = false;
+        delete AppState.suppTakenTimes[key];
         window.logEvent("supp_uncheck", { key });
     }
     saveUIState();
     window.renderSupps();
+    if (window.renderDailyStatsLog) window.renderDailyStatsLog();
 };
 
 window.openAddSupplementModal = () => {
@@ -861,7 +922,7 @@ window.saveNewSupplementFromModal = () => {
 
     const id = "supp_" + Date.now().toString(36);
     const label = /^[^\w\sа-яА-ЯёЁ]/.test(rawName) ? rawName : `💊 ${rawName}`;
-    AppState.suppMeta[id] = { id, label, lot, archived: false };
+    AppState.suppMeta[id] = { id, label, unit: "шт", lot, archived: false };
     AppState.supps[id] = false;
     AppState.suppsInventory[id] = stock;
     window.logEvent("supp_added", { id, label, stock });
@@ -985,8 +1046,8 @@ window.showSosCategory = (category) => {
         title.innerText = "🍺 АЛКОГОЛЬНЫЙ СРЫВ";
         title.className = "text-center text-warning";
         buttons.innerHTML = `
-            <p class="text-xs text-muted text-center">Протокол: 500 мл чистой воды + Гавискон + Янтарная кислота 100 мг + Магний глицинат 400 мг.</p>
-            <button class="btn btn-outline btn-sm auth-only-control" onclick="addWater(500); showToast('💧 +500мл воды учтено + выпей Гавискон')">💧 Записать +500мл воды в трекер</button>
+            <p class="text-xs text-muted text-center">Протокол: 500 мл чистой воды + Гавискон (жидкость 10–20 мл) + Янтарная кислота 100 мг + Магний глицинат 400 мг.</p>
+            <button class="btn btn-outline btn-sm auth-only-control" onclick="addWater(500); showToast('💧 +500мл воды учтено + выпей жидкий Гавискон')">💧 Записать +500мл воды в трекер</button>
             <button class="btn btn-outline btn-sm" onclick="showToast('💊 Янтарная кислота 100мг + Магний 400мг')">💊 Напоминание по фарме</button>
         `;
         if (VaultSession.unlocked) window.logEvent("sos_trigger", { type: "alcohol" });

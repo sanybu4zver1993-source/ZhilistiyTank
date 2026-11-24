@@ -208,7 +208,10 @@ class MainActivity : ComponentActivity() {
             val payload = if (result.resultCode == RESULT_OK && text.isNotEmpty()) {
                 JSONObject().put("ok", true).put("text", text).toString()
             } else {
-                JSONObject().put("ok", false).toString()
+                JSONObject()
+                    .put("ok", false)
+                    .put("cancelled", result.resultCode == RESULT_CANCELED)
+                    .toString()
             }
             invokeJsCallback(cbName, payload)
         }
@@ -387,13 +390,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun launchVoiceFoodRecognizer(callbackName: String) {
+    fun launchVoiceFoodRecognizer(callbackName: String, prompt: String = "Назови еду и вес...") {
         mainHandler.post {
             pendingVoiceCallbackName = callbackName
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "Назови еду и вес...")
+                putExtra(RecognizerIntent.EXTRA_PROMPT, prompt.ifBlank { "Говори..." })
             }
             try {
                 launchExternalSystemFlow {
@@ -401,7 +404,13 @@ class MainActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 pendingVoiceCallbackName = null
-                invokeJsCallback(callbackName, JSONObject().put("ok", false).put("error", e.message ?: "Голос недоступен").toString())
+                invokeJsCallback(
+                    callbackName,
+                    JSONObject()
+                        .put("ok", false)
+                        .put("error", "Голосовой ввод недоступен на устройстве (${e.message ?: "нет сервиса речи"})")
+                        .toString()
+                )
             }
         }
     }
@@ -747,7 +756,12 @@ class WebAppInterface(
 
     @JavascriptInterface
     fun startVoiceFoodAsync(callbackName: String) {
-        activity.launchVoiceFoodRecognizer(callbackName)
+        activity.launchVoiceFoodRecognizer(callbackName, "Назови еду и вес...")
+    }
+
+    @JavascriptInterface
+    fun startVoiceInputAsync(prompt: String, callbackName: String) {
+        activity.launchVoiceFoodRecognizer(callbackName, prompt)
     }
 
     // --- File Export ---
@@ -926,12 +940,24 @@ class WebAppInterface(
         val expressV1BetaUrl = "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/$encodedModel:generateContent?key=$encodedKey"
 
         // AI Studio now issues AQ.* keys as well, and generativelanguage works on both AIza* and AI Studio AQ.*.
-        val studioRes = postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage")
-        if (studioRes.optBoolean("ok", false) || !isAqKey) {
+        var studioRes = postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage")
+        val initialStatus = studioRes.optInt("status", 0)
+        if (!studioRes.optBoolean("ok", false) && initialStatus in listOf(429, 500, 502, 503, 504)) {
+            try {
+                Thread.sleep(900L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            studioRes = postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage")
+        }
+
+        val studioStatus = studioRes.optInt("status", 0)
+        // If AI Studio accepted the key (429/500/502/503/504) or key is not AQ.*, return AI Studio result directly.
+        if (studioRes.optBoolean("ok", false) || !isAqKey || studioStatus in listOf(429, 500, 502, 503, 504)) {
             return studioRes
         }
 
-        // For Vertex Express AQ.* keys, try aiplatform regardless of whether studio failed with HTTP 4xx or network/DNS error (status 0).
+        // For Vertex Express AQ.* keys, try aiplatform when generativelanguage failed with auth/model/network error.
         var vertexRes = postGeminiJson(expressV1Url, cleanKey, payloadJson, useQueryKey = true, hostLabel = "aiplatform-v1")
         if (vertexRes.optBoolean("ok", false)) {
             return vertexRes
@@ -944,7 +970,6 @@ class WebAppInterface(
             vertexRes = betaRes
         }
 
-        val studioStatus = studioRes.optInt("status", 0)
         val vertexStatus = vertexRes.optInt("status", 0)
         val studioErr = studioRes.optString("error", "ошибка")
         val vertexErr = vertexRes.optString("error", "ошибка")
@@ -998,7 +1023,8 @@ class WebAppInterface(
     fun runGlobalNetworkDiagnosticsAsync(
         trainerKey: String,
         visionKey: String,
-        modelId: String,
+        trainerModelId: String,
+        visionModelId: String,
         callbackName: String
     ) {
         networkExecutor.execute {
@@ -1052,16 +1078,17 @@ class WebAppInterface(
                 out.put("services", services)
 
                 // 4. Live Gemini Key probes
-                val cleanModel = modelId.trim().ifEmpty { "gemini-4-hydrogen" }.removePrefix("models/")
+                val cleanTrainerModel = trainerModelId.trim().ifEmpty { "gemini-4-hydrogen" }.removePrefix("models/")
+                val cleanVisionModel = visionModelId.trim().ifEmpty { cleanTrainerModel }.removePrefix("models/")
                 val cleanTrainer = trainerKey.trim()
                 val cleanVision = visionKey.trim()
                 val probePayload = """{"contents":[{"role":"user","parts":[{"text":"Ответь словом: ОК"}]}],"generationConfig":{"temperature":0,"maxOutputTokens":16}}"""
 
                 if (cleanTrainer.isNotEmpty()) {
                     val tStart = SystemClock.elapsedRealtime()
-                    val tRes = callGeminiWithFallback(cleanTrainer, cleanModel, probePayload)
+                    val tRes = callGeminiWithFallback(cleanTrainer, cleanTrainerModel, probePayload)
                     tRes.put("configured", true)
-                    tRes.put("model", cleanModel)
+                    tRes.put("model", cleanTrainerModel)
                     tRes.put("keyTag", keyPrefixTag(cleanTrainer))
                     tRes.put("ms", SystemClock.elapsedRealtime() - tStart)
                     tRes.remove("body")
@@ -1072,9 +1099,9 @@ class WebAppInterface(
 
                 if (cleanVision.isNotEmpty() && cleanVision != cleanTrainer) {
                     val vStart = SystemClock.elapsedRealtime()
-                    val vRes = callGeminiWithFallback(cleanVision, cleanModel, probePayload)
+                    val vRes = callGeminiWithFallback(cleanVision, cleanVisionModel, probePayload)
                     vRes.put("configured", true)
-                    vRes.put("model", cleanModel)
+                    vRes.put("model", cleanVisionModel)
                     vRes.put("keyTag", keyPrefixTag(cleanVision))
                     vRes.put("ms", SystemClock.elapsedRealtime() - vStart)
                     vRes.remove("body")

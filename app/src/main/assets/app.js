@@ -52,16 +52,16 @@ window.closeAppModal = () => {
 };
 
 window.DEFAULT_SUPP_META = {
-    mag: { id: "mag", label: "💊 Магний глицинат 400mg", lot: "", archived: false },
-    taurine: { id: "taurine", label: "⚡ Таурин 1000mg", lot: "", archived: false },
-    creatine: { id: "creatine", label: "🏋️ Креатин моногидрат 5г", lot: "", archived: false },
-    omega: { id: "omega", label: "🐟 Omega-3 1000mg", lot: "", archived: false },
-    d3: { id: "d3", label: "☀️ D3 + K2-MK7 5000IU", lot: "", archived: false },
-    multi: { id: "multi", label: "💊 Мультивитамины", lot: "", archived: false },
-    b2: { id: "b2", label: "💊 Витамин B2 100mg", lot: "", archived: false },
-    c300: { id: "c300", label: "🍊 Витамин C 300mg", lot: "", archived: false },
-    gaviscon: { id: "gaviscon", label: "💊 Гавискон 10ml", lot: "", archived: false },
-    succinic: { id: "succinic", label: "💊 Янтарная кислота 50mg", lot: "", archived: false }
+    mag: { id: "mag", label: "💊 Магний глицинат 400mg", unit: "шт", lot: "", archived: false },
+    taurine: { id: "taurine", label: "⚡ Таурин 1000mg", unit: "шт", lot: "", archived: false },
+    creatine: { id: "creatine", label: "🏋️ Креатин моногидрат 5г", unit: "порц", lot: "", archived: false },
+    omega: { id: "omega", label: "🐟 Omega-3 1000mg", unit: "шт", lot: "", archived: false },
+    d3: { id: "d3", label: "☀️ D3 + K2-MK7 5000IU", unit: "шт", lot: "", archived: false },
+    multi: { id: "multi", label: "💊 Мультивитамины", unit: "шт", lot: "", archived: false },
+    b2: { id: "b2", label: "💊 Витамин B2 100mg", unit: "шт", lot: "", archived: false },
+    c300: { id: "c300", label: "🍊 Витамин C 300mg", unit: "шт", lot: "", archived: false },
+    gaviscon: { id: "gaviscon", label: "🧴 Гавискон (жидкость / суспензия) 10-20мл", unit: "доз", lot: "", archived: false },
+    succinic: { id: "succinic", label: "💊 Янтарная кислота 50mg", unit: "шт", lot: "", archived: false }
 };
 
 function createDefaultState() {
@@ -73,6 +73,7 @@ function createDefaultState() {
             mag: false, taurine: false, creatine: false, omega: false, d3: false,
             multi: false, b2: false, c300: false, gaviscon: false, succinic: false
         },
+        suppTakenTimes: {},
         suppsInventory: {
             mag: 30, taurine: 60, creatine: 60, omega: 30, d3: 30,
             multi: 30, b2: 30, c300: 30, gaviscon: 20, succinic: 30
@@ -108,6 +109,9 @@ function createDefaultState() {
             alertsInUaToken: ""
         },
         cnsTriggers: ["Дроны", "Тревога", "Новости", "Недосып", "Тяж. тренировка"],
+        privacy: {
+            hideDossierPrivateFromAi: false
+        },
         activePots: { green: null, white: null },
         customPotIngredients: {},
         potTare: { green: 0, white: 0 },
@@ -167,6 +171,7 @@ window.mergeStateWithDefaults = (rawObj) => {
     merged.foodEditErrors = Math.max(0, Math.round(finiteOr(merged.foodEditErrors, 0)));
 
     merged.supps = safePlainAssign(Object.assign({}, def.supps), merged.supps);
+    merged.suppTakenTimes = safePlainAssign({}, merged.suppTakenTimes);
     merged.suppsInventory = safePlainAssign(Object.assign({}, def.suppsInventory), merged.suppsInventory);
 
     const mergedMeta = Object.assign({}, def.suppMeta);
@@ -174,9 +179,18 @@ window.mergeStateWithDefaults = (rawObj) => {
         for (const k of Object.keys(safeRaw.suppMeta)) {
             if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
             mergedMeta[k] = safePlainAssign(
-                Object.assign({ id: k, label: k, lot: "", archived: false }, mergedMeta[k] || {}),
+                Object.assign({ id: k, label: k, unit: "шт", lot: "", archived: false }, mergedMeta[k] || {}),
                 safeRaw.suppMeta[k]
             );
+        }
+    }
+    if (mergedMeta.gaviscon) {
+        const oldLbl = String(mergedMeta.gaviscon.label || "");
+        if (oldLbl.includes("💊 Гавискон") || oldLbl === "Гавискон 10ml") {
+            mergedMeta.gaviscon.label = def.suppMeta.gaviscon.label;
+        }
+        if (!mergedMeta.gaviscon.unit || mergedMeta.gaviscon.unit === "шт") {
+            mergedMeta.gaviscon.unit = "доз";
         }
     }
     merged.suppMeta = mergedMeta;
@@ -188,6 +202,9 @@ window.mergeStateWithDefaults = (rawObj) => {
     merged.apiKeys = safePlainAssign(Object.assign({}, def.apiKeys), merged.apiKeys);
     if (!Array.isArray(merged.apiKeys.trainerModels)) merged.apiKeys.trainerModels = def.apiKeys.trainerModels;
     if (!Array.isArray(merged.apiKeys.visionModels)) merged.apiKeys.visionModels = def.apiKeys.visionModels;
+
+    merged.privacy = safePlainAssign(Object.assign({}, def.privacy), merged.privacy);
+    merged.privacy.hideDossierPrivateFromAi = Boolean(merged.privacy.hideDossierPrivateFromAi);
 
     merged.activePots = safePlainAssign(Object.assign({}, def.activePots), merged.activePots);
     const rawTare = safePlainAssign(Object.assign({}, def.potTare), merged.potTare);
@@ -298,6 +315,7 @@ window.checkDailyReset = () => {
         AppState.todayFoodItems = [];
         AppState.water = 0;
         for (const k in AppState.supps) AppState.supps[k] = false;
+        AppState.suppTakenTimes = {};
         AppState.lastResetDate = today;
         window.compactAppState();
         saveUIState();
@@ -314,13 +332,14 @@ window.hydrateAllUI = () => {
     if (window.updateFoodUI) window.updateFoodUI();
     if (window.initVoiceFoodButton) window.initVoiceFoodButton();
     if (window.renderTriggerChips) window.renderTriggerChips();
+    if (window.renderMoodChips) window.renderMoodChips();
     if (window.renderSupps) window.renderSupps();
     if (window.updateCaffeineUI) window.updateCaffeineUI();
     if (window.calculateRecoveryScore) window.calculateRecoveryScore();
     if (window.renderHeatmap) window.renderHeatmap();
-    if (window.updateWorkoutUI) window.updateWorkoutUI();
     if (window.loadApiKeysUI) window.loadApiKeysUI();
     if (window.updatePvtBaselineUI) window.updatePvtBaselineUI();
+    if (window.renderDailyStatsLog) window.renderDailyStatsLog();
 
     window.refreshAirAlerts(false);
     window.refreshWeather(false);
@@ -350,9 +369,10 @@ window.wipeRuntimeSensitiveDom = () => {
     });
 
     const clearHtmlIds = [
-        "chatHistory", "qrOutput", "hrvResult", "todayFoodList",
-        "suppsContainer", "quickSuppsList", "cnsInsightsList", "sosSubButtons",
-        "foodImageStatus", "photoStatusBox", "photoAiComment", "photoUncertainBox",
+        "chatHistory", "qrOutput", "hrvResult", "todayFoodList", "todayWaterLog",
+        "suppsContainer", "quickSuppsList", "cnsInsightsList", "dailyStatsSummary", "dailyStatsTimeline",
+        "dashMoodChips", "cnsMoodChips",
+        "sosSubButtons", "foodImageStatus", "photoStatusBox", "photoAiComment", "photoUncertainBox",
         "photoItemsBreakdown", "photoFoodTitle", "photoWeightRange", "geminiTestStatus",
         "pvtBaselineInfo", "airAlertDetail", "heatmapGrid"
     ];
@@ -360,6 +380,8 @@ window.wipeRuntimeSensitiveDom = () => {
         const el = document.getElementById(id);
         if (el) el.innerHTML = "";
     });
+    const privCb = document.getElementById("hidePrivateDossierFromAi");
+    if (privCb) privCb.checked = false;
 
     const hideIds = ["qrOutput", "hrvResult", "photoPreviewWrap", "photoResultCard", "photoUncertainBox"];
     hideIds.forEach(id => {
@@ -385,6 +407,7 @@ window.showModule = (id) => {
         setTimeout(() => {
             window.renderCnsDashboard();
             if (window.renderCnsInsights) window.renderCnsInsights();
+            if (window.renderDailyStatsLog) window.renderDailyStatsLog();
         }, 50);
     }
     if ((id === "chat" || id === "photographer") && window.loadApiKeysUI) {
@@ -420,18 +443,56 @@ window.handleHardwareBack = () => {
     return "MINIMIZE";
 };
 
-window.logEvent = (type, payload) => {
+window.buildTimestampForDayTime = (dateStr = null, timeStr = null) => {
+    const now = new Date();
+    let y = now.getFullYear();
+    let m = now.getMonth() + 1;
+    let d = now.getDate();
+
+    if (typeof dateStr === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
+        const parts = dateStr.trim().split("-").map(Number);
+        const test = new Date(parts[0], parts[1] - 1, parts[2]);
+        if (!isNaN(test.getTime())) {
+            y = test.getFullYear();
+            m = test.getMonth() + 1;
+            d = test.getDate();
+        }
+    }
+
+    let hh = now.getHours();
+    let mm = now.getMinutes();
+    if (typeof timeStr === "string" && /^\d{1,2}:\d{2}/.test(timeStr.trim())) {
+        const tParts = timeStr.trim().split(":").map(Number);
+        if (tParts[0] >= 0 && tParts[0] <= 23 && tParts[1] >= 0 && tParts[1] <= 59) {
+            hh = tParts[0];
+            mm = tParts[1];
+        }
+    }
+
+    const dt = new Date(y, m - 1, d, hh, mm, 0, 0);
+    const day = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    const time = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+    return { day, time, ts: dt.getTime(), iso: dt.toISOString() };
+};
+
+window.logEvent = (type, payload, customWhen = null) => {
     if (!VaultSession.unlocked) return;
     if (!AppState.events) AppState.events = [];
+    const when = (customWhen && customWhen.iso && customWhen.day)
+        ? customWhen
+        : { iso: new Date().toISOString(), day: window.todayKey() };
     AppState.events.push({
         id: "evt_" + Date.now() + "_" + Math.floor(Math.random() * 10000),
         type,
-        occurred_at: new Date().toISOString(),
-        day: window.todayKey(),
+        occurred_at: when.iso,
+        day: when.day,
         payload: payload || {}
     });
     if (AppState.events.length > 3500) {
         window.compactAppState();
+    }
+    if (window.activeModuleId === "sleep" && window.renderDailyStatsLog) {
+        window.renderDailyStatsLog();
     }
     saveUIState();
 };
@@ -549,6 +610,122 @@ window.syncWaterFromNative = (pushOnly = false) => {
         const pct = Math.min(100, (AppState.water / norm) * 100);
         document.getElementById("waterBar").style.width = pct + "%";
     }
+    if (window.renderTodayWaterLog) window.renderTodayWaterLog();
+};
+
+window.renderTodayWaterLog = () => {
+    const box = document.getElementById("todayWaterLog");
+    if (!box) return;
+    const today = window.todayKey();
+    const entries = (AppState.events || [])
+        .filter(e => e.type === "water" && (e.day || (e.occurred_at || "").slice(0, 10)) === today)
+        .sort((a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime());
+
+    if (entries.length === 0) {
+        box.innerHTML = "<span class='text-muted'>Записей воды за сегодня пока нет</span>";
+        return;
+    }
+    box.innerHTML = "<strong class='text-main'>💧 По часам сегодня:</strong>" +
+        entries.slice(-14).reverse().map(e => {
+            const tm = e.payload?.time || new Date(e.occurred_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+            const src = e.payload?.source === "trainer_ai" ? " · Тренер" : (e.payload?.source === "qs_tile" ? " · Шторка" : "");
+            return `<div>• [${escapeHtml(tm)}] <b>+${Math.round(e.payload?.ml || 0)} мл</b>${escapeHtml(src)}</div>`;
+        }).join("");
+};
+
+window.renderDailyStatsLog = () => {
+    const sel = document.getElementById("statsDaySelect");
+    const sumEl = document.getElementById("dailyStatsSummary");
+    const listEl = document.getElementById("dailyStatsTimeline");
+    if (!sel || !sumEl || !listEl) return;
+
+    const today = window.todayKey();
+    const daySet = new Set([today]);
+    (AppState.events || []).forEach(e => {
+        const d = e.day || (e.occurred_at || "").slice(0, 10);
+        if (d) daySet.add(d);
+    });
+    (AppState.sleepLogs || []).forEach(s => { if (s.date) daySet.add(s.date); });
+    (AppState.workoutDays || []).forEach(d => { if (d) daySet.add(d); });
+    Object.keys(AppState.dailyHistory || {}).forEach(d => { if (d) daySet.add(d); });
+
+    const days = Array.from(daySet).sort().reverse().slice(0, 45);
+    const prevSelected = sel.value;
+    const chosenDay = days.includes(prevSelected) ? prevSelected : today;
+
+    sel.innerHTML = days.map(d => {
+        const label = d === today ? `${d} (сегодня)` : d;
+        return `<option value="${escapeHtml(d)}" ${d === chosenDay ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    }).join("");
+    sel.value = chosenDay;
+
+    const dayEvents = (AppState.events || [])
+        .filter(e => (e.day || (e.occurred_at || "").slice(0, 10)) === chosenDay)
+        .sort((a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime());
+
+    const hist = (AppState.dailyHistory && AppState.dailyHistory[chosenDay]) || {};
+    const waterEventsSum = dayEvents.filter(e => e.type === "water").reduce((s, e) => s + (Number(e.payload?.ml) || 0), 0);
+    const waterTotal = chosenDay === today ? (AppState.water || 0) : Math.max(waterEventsSum, hist.water || 0);
+
+    const foodEvents = dayEvents.filter(e => e.type === "food");
+    const foodKcalEvents = foodEvents.reduce((s, e) => s + (Number(e.payload?.Kcal) || 0), 0);
+    const foodTotalKcal = chosenDay === today ? (AppState.food?.totalKcal || 0) : Math.max(foodKcalEvents, hist.kcal || 0);
+    const foodB = chosenDay === today ? (AppState.food?.totalB || 0) : foodEvents.reduce((s, e) => s + (Number(e.payload?.B) || 0), 0);
+    const foodF = chosenDay === today ? (AppState.food?.totalF || 0) : foodEvents.reduce((s, e) => s + (Number(e.payload?.F) || 0), 0);
+    const foodU = chosenDay === today ? (AppState.food?.totalU || 0) : foodEvents.reduce((s, e) => s + (Number(e.payload?.U) || 0), 0);
+
+    const suppEvents = dayEvents.filter(e => e.type === "supp_taken");
+    const sleepHrs = (AppState.sleepLogs || []).filter(s => s.date === chosenDay).reduce((s, x) => s + (Number(x.hrs) || 0), 0);
+    const hadWorkout = (AppState.workoutDays || []).includes(chosenDay) || dayEvents.some(e => e.type === "workout");
+
+    const moodEvents = dayEvents.filter(e => e.type === "mood");
+    const lastMood = moodEvents.length > 0 ? moodEvents[moodEvents.length - 1].payload?.mood : "";
+
+    sumEl.innerHTML = `
+        <div class="card bg-dark" style="padding:8px;">
+            <div>💧 Вода: <b>${Math.round(waterTotal)} мл</b> · 🍗 Еда: <b>${Math.round(foodTotalKcal)} ккал</b> (Б:${Math.round(foodB)} Ж:${Math.round(foodF)} У:${Math.round(foodU)})</div>
+            <div class="mt-1">💊 БАДы/фарма: <b>${suppEvents.length}</b> · 🛌 Сон: <b>${sleepHrs > 0 ? sleepHrs + " ч" : "—"}</b> · 🏋️ Трен: <b>${hadWorkout ? "Да" : "Нет"}</b>${lastMood ? ` · 🎭 <b>${escapeHtml(lastMood)}</b>` : ""}</div>
+        </div>
+    `;
+
+    if (dayEvents.length === 0) {
+        listEl.innerHTML = `<div class="text-muted">За ${escapeHtml(chosenDay)} пока нет подробных событий с отметкой времени.</div>`;
+        return;
+    }
+
+    listEl.innerHTML = dayEvents.map(e => {
+        const tm = e.payload?.time || new Date(e.occurred_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+        const byAi = e.payload?.source === "trainer_ai" ? " <span class='badge-pill'>Тренер</span>" : "";
+        let desc = "";
+        if (e.type === "water") {
+            desc = `💧 Вода: +${Math.round(e.payload?.ml || 0)} мл`;
+        } else if (e.type === "food") {
+            desc = `🍗 ${escapeHtml(e.payload?.name || "Еда")} — ${Math.round(e.payload?.Kcal || 0)} ккал (Б:${Math.round(e.payload?.B || 0)} Ж:${Math.round(e.payload?.F || 0)} У:${Math.round(e.payload?.U || 0)})`;
+        } else if (e.type === "supp_taken") {
+            desc = `💊 ${escapeHtml(e.payload?.label || e.payload?.key || "БАД")}`;
+        } else if (e.type === "caffeine") {
+            desc = `☕ Кофеин: +${Math.round(e.payload?.mg || 0)} мг`;
+        } else if (e.type === "sleep") {
+            desc = `🛌 Сон: ${e.payload?.hrs || 0} ч (кач. ${e.payload?.quality || "—"}/5)${e.payload?.note ? " · " + escapeHtml(e.payload.note) : ""}`;
+        } else if (e.type === "workout") {
+            desc = `🏋️ Тренировка${e.payload?.note ? ": " + escapeHtml(e.payload.note) : ""}`;
+        } else if (e.type === "stress") {
+            desc = `⚡ Стресс: ${escapeHtml(e.payload?.trigger || "триггер")}`;
+        } else if (e.type === "mood") {
+            desc = `🎭 Настроение: ${escapeHtml(e.payload?.mood || "отмечено")}`;
+        } else if (e.type === "weight") {
+            desc = `⚖️ Вес: ${escapeHtml(String(e.payload?.weightKg || ""))} кг`;
+        } else if (e.type === "cns_recovery") {
+            desc = `🧘 Восстановление ЦНС (NSDR/отдых)`;
+        } else if (e.type === "pvt_series") {
+            desc = `🧬 PVT тест: медиана ${Math.round(e.payload?.medianMs || 0)} мс`;
+        } else if (e.type === "sos_trigger") {
+            desc = `🆘 SOS протокол: ${escapeHtml(e.payload?.type || "")}`;
+        } else {
+            return "";
+        }
+        return `<div class="p-2 card bg-dark" style="padding:6px 8px;"><span class="text-primary font-bold">[${escapeHtml(tm)}]</span> ${desc}${byAi}</div>`;
+    }).filter(Boolean).join("");
 };
 
 // --- Food Totals ---
@@ -1047,9 +1224,11 @@ window.exportMedicalReportTxt = () => {
     const meta = AppState.suppMeta || window.DEFAULT_SUPP_META;
     for (const k in meta) {
         if (meta[k].archived) continue;
-        const taken = AppState.supps[k] ? "[ПРИЙНЯТО СЬОГОДНІ]" : "[Не прийнято]";
+        const takenTime = AppState.suppTakenTimes?.[k] ? ` о ${AppState.suppTakenTimes[k]}` : "";
+        const taken = AppState.supps[k] ? `[ПРИЙНЯТО СЬОГОДНІ${takenTime}]` : "[Не прийнято]";
         const stock = AppState.suppsInventory[k] || 0;
-        report += `- ${meta[k].label} ${taken} (залишок: ${stock} шт)\n`;
+        const unit = meta[k].unit || "шт";
+        report += `- ${meta[k].label} ${taken} (залишок: ${stock} ${unit})\n`;
     }
 
     report += "\n--- ОСТАННІ ПОДІЇ ТА ТРИГЕРИ ---\n";
@@ -1070,6 +1249,9 @@ window.verifyDomContract = () => {
         "module-water", "module-sleep", "module-workout", "module-biometrics",
         "module-pharma", "module-chat", "module-stegano", "module-settings", "module-sos",
         "cnsChart", "pvtButton", "suppsContainer", "chatHistory", "chatSendBtn",
+        "btnVoiceFood", "btnVoicePhoto", "btnVoiceChat", "todayWaterLog",
+        "statsDaySelect", "dailyStatsSummary", "dailyStatsTimeline",
+        "dashMoodChips", "cnsMoodChips", "hidePrivateDossierFromAi",
         "photoPreviewImg", "photoResultCard",
         "trainerModelSelect", "visionModelSelect", "appVersionBadge"
     ];
