@@ -106,6 +106,8 @@ function createDefaultState() {
             visionModel: "gemini-4-hydrogen",
             visionModels: ["gemini-4-hydrogen", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
             thinkingLevel: "MEDIUM",
+            visionThinkingLevel: "LOW",
+            nextDnsHost: "8a5865.dns.nextdns.io",
             alertsInUaToken: ""
         },
         cnsTriggers: ["Дроны", "Тревога", "Новости", "Недосып", "Тяж. тренировка"],
@@ -360,7 +362,7 @@ window.wipeRuntimeSensitiveDom = () => {
         "foodName", "foodB", "foodF", "foodU", "foodKcal", "smartFoodInput",
         "photoContextInput", "photoFoodNameInput", "photoFoodB", "photoFoodF", "photoFoodU", "photoFoodKcal",
         "chatInput", "steganoPassInput", "tankBackupPassInput",
-        "oldCurrentPin", "newCurrentPin", "geminiTrainerKey", "geminiVisionKey", "alertsInUaToken",
+        "oldCurrentPin", "newCurrentPin", "geminiTrainerKey", "geminiVisionKey", "nextDnsHostInput", "alertsInUaToken",
         "customWaterInput", "qrInputText"
     ];
     fields.forEach(id => {
@@ -372,8 +374,9 @@ window.wipeRuntimeSensitiveDom = () => {
         "chatHistory", "qrOutput", "hrvResult", "todayFoodList", "todayWaterLog",
         "suppsContainer", "quickSuppsList", "cnsInsightsList", "dailyStatsSummary", "dailyStatsTimeline",
         "dashMoodChips", "cnsMoodChips",
-        "sosSubButtons", "foodImageStatus", "photoStatusBox", "photoAiComment", "photoUncertainBox",
+        "sosSubButtons", "foodImageStatus", "photoStatusBox", "photoLocalMlBox", "photoAiComment", "photoUncertainBox",
         "photoItemsBreakdown", "photoFoodTitle", "photoWeightRange", "geminiTestStatus",
+        "trainerModelsHint", "visionModelsHint",
         "pvtBaselineInfo", "airAlertDetail", "heatmapGrid"
     ];
     clearHtmlIds.forEach(id => {
@@ -383,7 +386,7 @@ window.wipeRuntimeSensitiveDom = () => {
     const privCb = document.getElementById("hidePrivateDossierFromAi");
     if (privCb) privCb.checked = false;
 
-    const hideIds = ["qrOutput", "hrvResult", "photoPreviewWrap", "photoResultCard", "photoUncertainBox"];
+    const hideIds = ["qrOutput", "hrvResult", "photoPreviewWrap", "photoLocalMlBox", "photoResultCard", "photoUncertainBox"];
     hideIds.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.style.display = "none";
@@ -1140,8 +1143,19 @@ window.onAirAlertsLoaded = (wrapperStr) => {
     }
 };
 
+let lastWeatherFetchMs = 0;
+let lastWeatherCity = "";
+let lastWeatherSummary = "";
+const WEATHER_CACHE_TTL_MS = 30 * 60 * 1000;
+
 window.refreshWeather = (manual = false) => {
     const city = getCityInfo();
+    const now = Date.now();
+    if (!manual && lastWeatherSummary && lastWeatherCity === city.cityName && (now - lastWeatherFetchMs) < WEATHER_CACHE_TTL_MS) {
+        const el = document.getElementById("weatherStatus");
+        if (el) el.innerText = lastWeatherSummary;
+        return;
+    }
     if (manual) document.getElementById("weatherStatus").innerText = `🌤 ${city.cityName}...`;
     if (window.AndroidBridge && window.AndroidBridge.fetchWeatherAsync) {
         window.AndroidBridge.fetchWeatherAsync(city.coords[0], city.coords[1], "onWeatherLoaded");
@@ -1162,7 +1176,11 @@ window.onWeatherLoaded = (wrapperStr) => {
             const temp = Math.round(data.current.temperature_2m);
             const wind = Math.round(data.current.wind_speed_10m);
             const city = getCityInfo();
-            document.getElementById("weatherStatus").innerText = `🌤 ${city.cityName}: ${temp > 0 ? "+" + temp : temp}°C · ${wind} км/ч`;
+            const text = `🌤 ${city.cityName}: ${temp > 0 ? "+" + temp : temp}°C · ${wind} км/ч`;
+            lastWeatherFetchMs = Date.now();
+            lastWeatherCity = city.cityName;
+            lastWeatherSummary = text;
+            document.getElementById("weatherStatus").innerText = text;
         }
     } catch (_) {}
 };

@@ -171,6 +171,12 @@ object AirAlertHelper {
     @Volatile
     private var lastResultJson: String? = null
 
+    @Volatile
+    private var lastAlertsInUaModified: String? = null
+
+    @Volatile
+    private var lastAlertsInUaBody: String? = null
+
     fun isValidSirenAlertsPayload(raw: String): Boolean {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return false
@@ -279,13 +285,32 @@ object AirAlertHelper {
         var fallbackNote = ""
 
         if (token.isNotEmpty()) {
+            val extraHeaders = mutableMapOf<String, String>()
+            val cachedMod = lastAlertsInUaModified
+            val cachedBody = lastAlertsInUaBody
+            if (!cachedMod.isNullOrBlank() && !cachedBody.isNullOrBlank()) {
+                extraHeaders["If-Modified-Since"] = cachedMod
+            }
             val alertsInUaRes = httpGetEx(
                 urlString = "https://api.alerts.in.ua/v1/alerts/active.json",
                 bearerToken = token,
                 connectMs = 8_000,
-                readMs = 10_000
+                readMs = 10_000,
+                extraHeaders = extraHeaders
             )
+            if (alertsInUaRes.status == 304 && !cachedBody.isNullOrBlank() && isValidAlertsInUaPayload(cachedBody)) {
+                return JSONObject()
+                    .put("ok", true)
+                    .put("source", "alerts.in.ua")
+                    .put("via", alertsInUaRes.resolvedVia)
+                    .put("body", cachedBody)
+                    .toString()
+            }
             if (alertsInUaRes.ok && isValidAlertsInUaPayload(alertsInUaRes.body)) {
+                if (alertsInUaRes.lastModified.isNotBlank()) {
+                    lastAlertsInUaModified = alertsInUaRes.lastModified
+                    lastAlertsInUaBody = alertsInUaRes.body
+                }
                 return JSONObject()
                     .put("ok", true)
                     .put("source", "alerts.in.ua")
@@ -293,7 +318,12 @@ object AirAlertHelper {
                     .put("body", alertsInUaRes.body)
                     .toString()
             }
+            lastAlertsInUaModified = null
+            lastAlertsInUaBody = null
             fallbackNote = "alerts.in.ua недоступен (${if (alertsInUaRes.status > 0) "код ${alertsInUaRes.status}" else alertsInUaRes.error.ifBlank { "сеть" }})"
+        } else {
+            lastAlertsInUaModified = null
+            lastAlertsInUaBody = null
         }
 
         // Primary keyless radar with city/district/hromada precision: siren.pp.ua
@@ -360,13 +390,14 @@ object AirAlertHelper {
         urlString: String,
         bearerToken: String?,
         connectMs: Int,
-        readMs: Int
+        readMs: Int,
+        extraHeaders: Map<String, String> = emptyMap()
     ): ResilientNetwork.HttpResponse {
-        val headers = if (!bearerToken.isNullOrBlank()) {
-            mapOf("Authorization" to "Bearer $bearerToken")
-        } else {
-            emptyMap()
+        val headers = mutableMapOf<String, String>()
+        if (!bearerToken.isNullOrBlank()) {
+            headers["Authorization"] = "Bearer $bearerToken"
         }
+        headers.putAll(extraHeaders)
         return ResilientNetwork.get(
             urlString = urlString,
             headers = headers,

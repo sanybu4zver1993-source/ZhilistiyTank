@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://appassets.androidplatform.net; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https://appassets.androidplatform.net data:; connect-src 'self' https://generativelanguage.googleapis.com https://aiplatform.googleapis.com https://api.alerts.in.ua https://siren.pp.ua https://ubilling.net.ua https://api.open-meteo.com; object-src 'none'; base-uri 'self'; form-action 'none';">
     <title>Жилистый Танк</title>
     <link rel="stylesheet" href="style.css">
     <script>
@@ -335,6 +336,7 @@
                         </div>
 
                         <div id="photoStatusBox" class="text-sm font-bold"></div>
+                        <div id="photoLocalMlBox" class="card bg-dark text-xs text-muted" style="display:none; padding:8px 10px; border-color:rgba(0,229,255,0.35);"></div>
                     </div>
 
                     <div id="photoResultCard" class="card flex-col gap-2" style="display:none;">
@@ -597,7 +599,7 @@
                         <div class="input-group">
                             <label>API ключ ИИ-Тренера (чат и анализ ЦНС)</label>
                             <div class="flex gap-1">
-                                <input type="password" id="geminiTrainerKey" placeholder="AIza... или AQ..." style="flex:1;" onchange="syncApiKeysFromInputs(true)">
+                                <input type="password" id="geminiTrainerKey" placeholder="Вставь AIza... или AQ... (модели подтянутся сами)" style="flex:1;" oninput="onApiKeyEdited('trainer')" onpaste="setTimeout(() => onApiKeyEdited('trainer'), 60)" onchange="onApiKeyEdited('trainer')">
                                 <button class="btn btn-outline btn-sm" style="width:auto;" onclick="loadModelsForRole('trainer')">🔄 Модели</button>
                             </div>
                         </div>
@@ -609,29 +611,47 @@
                             <div class="input-group">
                                 <label>Thinking (Тренер)</label>
                                 <select id="geminiThinkingSelect" onchange="syncApiKeysFromInputs(true)">
-                                    <option value="MEDIUM">MEDIUM (Быстро и умно)</option>
-                                    <option value="HIGH">HIGH (Глубокий)</option>
-                                    <option value="XHIGH">XHIGH (Макс. Hydrogen)</option>
-                                    <option value="LOW">LOW (Мин. задержка)</option>
+                                    <option value="LOW">LOW (Быстро / мин. расход)</option>
+                                    <option value="MEDIUM">MEDIUM (Баланс и скорость)</option>
+                                    <option value="HIGH">HIGH (Глубокий анализ)</option>
+                                    <option value="XHIGH">XHIGH (Сверхвысокий · Hydrogen)</option>
                                 </select>
                             </div>
                         </div>
+                        <div id="trainerModelsHint" class="text-xs text-muted"></div>
 
                         <hr class="border-gray" style="margin:6px 0;">
 
                         <div class="input-group">
                             <label>API ключ Фотографа / Vision (пусто = ключ Тренера)</label>
                             <div class="flex gap-1">
-                                <input type="password" id="geminiVisionKey" placeholder="AIza... или AQ..." style="flex:1;" onchange="syncApiKeysFromInputs(true)">
+                                <input type="password" id="geminiVisionKey" placeholder="Вставь AIza... или AQ... (модели подтянутся сами)" style="flex:1;" oninput="onApiKeyEdited('vision')" onpaste="setTimeout(() => onApiKeyEdited('vision'), 60)" onchange="onApiKeyEdited('vision')">
                                 <button class="btn btn-outline btn-sm" style="width:auto;" onclick="loadModelsForRole('vision')">🔄 Модели</button>
                             </div>
                         </div>
-                        <div class="input-group">
-                            <label>Модель Фотографа (Vision)</label>
-                            <select id="visionModelSelect" onchange="syncApiKeysFromInputs(true)"></select>
+                        <div class="grid-2 gap-2">
+                            <div class="input-group">
+                                <label>Модель Фотографа (Vision)</label>
+                                <select id="visionModelSelect" onchange="syncApiKeysFromInputs(true)"></select>
+                            </div>
+                            <div class="input-group">
+                                <label>Thinking (Фотограф)</label>
+                                <select id="visionThinkingSelect" onchange="syncApiKeysFromInputs(true)">
+                                    <option value="LOW">LOW (Быстро для фото)</option>
+                                    <option value="MEDIUM">MEDIUM (Средний / баланс)</option>
+                                    <option value="HIGH">HIGH (Высокий / сложные блюда)</option>
+                                    <option value="XHIGH">XHIGH (Сверхвысокий · макс.)</option>
+                                </select>
+                            </div>
                         </div>
+                        <div id="visionModelsHint" class="text-xs text-muted"></div>
 
                         <hr class="border-gray" style="margin:6px 0;">
+
+                        <div class="input-group">
+                            <label>NextDNS профиль (DoT / DoH обход DNS)</label>
+                            <input type="text" id="nextDnsHostInput" placeholder="8a5865.dns.nextdns.io" onchange="syncApiKeysFromInputs(true)">
+                        </div>
 
                         <div class="input-group">
                             <label>Токен alerts.in.ua (опц., приоритет поверх siren.pp.ua)</label>
@@ -642,6 +662,9 @@
                             <input type="checkbox" id="hidePrivateDossierFromAi" class="checkbox" style="width:18px;height:18px; flex-shrink:0;" onchange="toggleAiPrivacyFilter(this.checked)">
                             <span>🕵️ Скрывать личные данные досье от ИИ (год, кровь, аллергии, диагнозы, SOS и заметки ко сну)</span>
                         </label>
+                        <div class="text-xs text-muted" style="opacity:0.78; margin:-2px 0 4px 26px;">
+                            ℹ️ Приватность Google: на бесплатном ключе AI Studio промпты могут использоваться для обучения; на платном (Paid Billing) — нет.
+                        </div>
 
                         <div class="grid-2 gap-2">
                             <button class="btn btn-primary" onclick="saveSettings()">💾 Сохранить API</button>

@@ -749,6 +749,23 @@ class WebAppInterface(
     }
 
     @JavascriptInterface
+    fun preAnalyzeFoodImageAsync(base64Data: String, callbackName: String) {
+        networkExecutor.execute {
+            val res = try {
+                FoodPreAnalyzer.analyzeBase64(base64Data)
+            } catch (t: Throwable) {
+                JSONObject().put("ok", false).put("error", t.message ?: "ML pre-analysis failed")
+            }
+            invokeJsCallback(callbackName, res.toString())
+        }
+    }
+
+    @JavascriptInterface
+    fun setNextDnsProfile(hostOrId: String) {
+        ResilientNetwork.setNextDnsProfile(hostOrId)
+    }
+
+    @JavascriptInterface
     fun canUseVoiceInput(): Boolean {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
         return context.packageManager.queryIntentActivities(intent, 0).isNotEmpty()
@@ -849,7 +866,7 @@ class WebAppInterface(
                 if (resp.ok) {
                     val json = JSONObject(resp.body)
                     val arr = json.optJSONArray("models") ?: JSONArray()
-                    val filtered = JSONArray()
+                    val rawNames = mutableListOf<String>()
                     for (i in 0 until arr.length()) {
                         val m = arr.getJSONObject(i)
                         val name = m.optString("name", "").removePrefix("models/")
@@ -860,12 +877,33 @@ class WebAppInterface(
                             !lower.contains("tts") &&
                             !lower.contains("embedding") &&
                             !lower.contains("imagen") &&
+                            !lower.contains("veo") &&
                             !lower.contains("robotics") &&
-                            !lower.contains("aqa")
+                            !lower.contains("aqa") &&
+                            !lower.contains("native-audio") &&
+                            !lower.contains("computer-use")
                         ) {
-                            filtered.put(name)
+                            rawNames.add(name)
                         }
                     }
+                    fun modelPriorityScore(id: String): Int {
+                        val l = id.lowercase()
+                        return when {
+                            l == "gemini-4-hydrogen" -> 0
+                            l.contains("gemini-4") || l.contains("hydrogen") || l.contains("carbon") -> 1
+                            l.contains("gemini-3") -> 2
+                            l == "gemini-2.5-flash" -> 3
+                            l == "gemini-2.5-pro" -> 4
+                            l == "gemini-2.5-flash-lite" -> 5
+                            l.contains("gemini-2.5") -> 6
+                            l.contains("gemini-2.0-flash") -> 7
+                            l.contains("flash") -> 8
+                            l.contains("pro") -> 9
+                            else -> 20
+                        }
+                    }
+                    val sortedNames = rawNames.distinct().sortedWith(compareBy({ modelPriorityScore(it) }, { it }))
+                    val filtered = JSONArray(sortedNames)
                     if (filtered.length() > 0) {
                         invokeJsCallback(
                             callbackName,
@@ -873,6 +911,7 @@ class WebAppInterface(
                                 .put("ok", true)
                                 .put("fallback", false)
                                 .put("resolvedVia", resp.resolvedVia)
+                                .put("keyTag", keyPrefixTag(cleanKey))
                                 .put("models", filtered)
                                 .toString()
                         )
@@ -930,40 +969,35 @@ class WebAppInterface(
         }
     }
 
-    private fun callGeminiWithFallback(cleanKey: String, cleanModel: String, payloadJson: String): JSONObject {
+    private fun callGeminiWithFallback(
+        cleanKey: String,
+        cleanModel: String,
+        payloadJson: String,
+        isDiagnosticProbe: Boolean = false
+    ): JSONObject {
         val encodedModel = URLEncoder.encode(cleanModel, "UTF-8").replace("+", "%20")
-        val encodedKey = URLEncoder.encode(cleanKey, "UTF-8")
         val isAqKey = cleanKey.startsWith("AQ.")
 
         val aiStudioUrl = "https://generativelanguage.googleapis.com/v1beta/models/$encodedModel:generateContent"
-        val expressV1Url = "https://aiplatform.googleapis.com/v1/publishers/google/models/$encodedModel:generateContent?key=$encodedKey"
-        val expressV1BetaUrl = "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/$encodedModel:generateContent?key=$encodedKey"
+        val expressV1Url = "https://aiplatform.googleapis.com/v1/publishers/google/models/$encodedModel:generateContent"
+        val expressV1BetaUrl = "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/$encodedModel:generateContent"
+        val retryDelaysMs = if (isDiagnosticProbe) longArrayOf(800L) else longArrayOf(1200L, 2600L)
 
         // AI Studio now issues AQ.* keys as well, and generativelanguage works on both AIza* and AI Studio AQ.*.
-        var studioRes = postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage")
-        val initialStatus = studioRes.optInt("status", 0)
-        if (!studioRes.optBoolean("ok", false) && initialStatus in listOf(429, 500, 502, 503, 504)) {
-            try {
-                Thread.sleep(900L)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-            studioRes = postGeminiJson(aiStudioUrl, cleanKey, payloadJson, useQueryKey = false, hostLabel = "generativelanguage")
-        }
-
+        var studioRes = postGeminiJsonWithRetry(aiStudioUrl, cleanKey, payloadJson, "generativelanguage", retryDelaysMs)
         val studioStatus = studioRes.optInt("status", 0)
         // If AI Studio accepted the key (429/500/502/503/504) or key is not AQ.*, return AI Studio result directly.
         if (studioRes.optBoolean("ok", false) || !isAqKey || studioStatus in listOf(429, 500, 502, 503, 504)) {
             return studioRes
         }
 
-        // For Vertex Express AQ.* keys, try aiplatform when generativelanguage failed with auth/model/network error.
-        var vertexRes = postGeminiJson(expressV1Url, cleanKey, payloadJson, useQueryKey = true, hostLabel = "aiplatform-v1")
+        // For Vertex Express AQ.* keys, pass x-goog-api-key header instead of query string to avoid URL/log leakage.
+        var vertexRes = postGeminiJsonWithRetry(expressV1Url, cleanKey, payloadJson, "aiplatform-v1", retryDelaysMs)
         if (vertexRes.optBoolean("ok", false)) {
             return vertexRes
         }
         if (vertexRes.optInt("status", 0) == 404) {
-            val betaRes = postGeminiJson(expressV1BetaUrl, cleanKey, payloadJson, useQueryKey = true, hostLabel = "aiplatform-v1beta1")
+            val betaRes = postGeminiJsonWithRetry(expressV1BetaUrl, cleanKey, payloadJson, "aiplatform-v1beta1", retryDelaysMs)
             if (betaRes.optBoolean("ok", false)) {
                 return betaRes
             }
@@ -984,20 +1018,42 @@ class WebAppInterface(
             .put("error", combinedErr)
     }
 
+    private fun postGeminiJsonWithRetry(
+        urlString: String,
+        apiKey: String,
+        payloadJson: String,
+        hostLabel: String,
+        retryDelaysMs: LongArray
+    ): JSONObject {
+        var res = postGeminiJson(urlString, apiKey, payloadJson, hostLabel)
+        for (delayMs in retryDelaysMs) {
+            if (res.optBoolean("ok", false)) break
+            val status = res.optInt("status", 0)
+            if (status !in listOf(429, 500, 502, 503, 504)) break
+            try {
+                Thread.sleep(delayMs)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+            res = postGeminiJson(urlString, apiKey, payloadJson, hostLabel)
+        }
+        return res
+    }
+
     private fun postGeminiJson(
         urlString: String,
         apiKey: String,
         payloadJson: String,
-        useQueryKey: Boolean,
         hostLabel: String
     ): JSONObject {
-        val headers = if (!useQueryKey) mapOf("x-goog-api-key" to apiKey) else emptyMap()
+        val headers = mapOf("x-goog-api-key" to apiKey)
         val resp = ResilientNetwork.postJson(
             urlString = urlString,
             jsonBody = payloadJson,
             headers = headers,
             connectTimeoutMs = 20_000,
-            readTimeoutMs = 60_000
+            readTimeoutMs = 90_000
         )
         return if (resp.ok) {
             JSONObject()
@@ -1017,6 +1073,51 @@ class WebAppInterface(
                 .put("resolvedVia", resp.resolvedVia)
                 .put("error", errMsg.ifBlank { "HTTP ${resp.status} ($hostLabel)" })
         }
+    }
+
+    private fun buildProbePayload(modelId: String, includeThinking: Boolean = true): String {
+        val genCfg = JSONObject()
+            .put("temperature", 0)
+            .put("maxOutputTokens", 256)
+        if (includeThinking) {
+            val lower = modelId.lowercase()
+            when {
+                lower.contains("gemini-3") || lower.contains("gemini-4") ||
+                    lower.contains("hydrogen") || lower.contains("carbon") || lower.contains("argon") -> {
+                    genCfg.put("thinkingConfig", JSONObject().put("thinkingLevel", "LOW"))
+                }
+                lower.contains("gemini-2.5-pro") -> {
+                    genCfg.put("thinkingConfig", JSONObject().put("thinkingBudget", 128))
+                }
+                lower.contains("gemini-2.5") -> {
+                    genCfg.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+                }
+            }
+        }
+        val part = JSONObject().put("text", "Ответь словом: ОК")
+        val content = JSONObject().put("role", "user").put("parts", JSONArray().put(part))
+        return JSONObject()
+            .put("contents", JSONArray().put(content))
+            .put("generationConfig", genCfg)
+            .toString()
+    }
+
+    private fun probeGeminiKey(apiKey: String, modelId: String): JSONObject {
+        var res = callGeminiWithFallback(
+            cleanKey = apiKey,
+            cleanModel = modelId,
+            payloadJson = buildProbePayload(modelId, includeThinking = true),
+            isDiagnosticProbe = true
+        )
+        if (!res.optBoolean("ok", false) && res.optInt("status", 0) == 400) {
+            res = callGeminiWithFallback(
+                cleanKey = apiKey,
+                cleanModel = modelId,
+                payloadJson = buildProbePayload(modelId, includeThinking = false),
+                isDiagnosticProbe = true
+            )
+        }
+        return res
     }
 
     @JavascriptInterface
@@ -1082,11 +1183,10 @@ class WebAppInterface(
                 val cleanVisionModel = visionModelId.trim().ifEmpty { cleanTrainerModel }.removePrefix("models/")
                 val cleanTrainer = trainerKey.trim()
                 val cleanVision = visionKey.trim()
-                val probePayload = """{"contents":[{"role":"user","parts":[{"text":"Ответь словом: ОК"}]}],"generationConfig":{"temperature":0,"maxOutputTokens":16}}"""
 
                 if (cleanTrainer.isNotEmpty()) {
                     val tStart = SystemClock.elapsedRealtime()
-                    val tRes = callGeminiWithFallback(cleanTrainer, cleanTrainerModel, probePayload)
+                    val tRes = probeGeminiKey(cleanTrainer, cleanTrainerModel)
                     tRes.put("configured", true)
                     tRes.put("model", cleanTrainerModel)
                     tRes.put("keyTag", keyPrefixTag(cleanTrainer))
@@ -1099,7 +1199,7 @@ class WebAppInterface(
 
                 if (cleanVision.isNotEmpty() && cleanVision != cleanTrainer) {
                     val vStart = SystemClock.elapsedRealtime()
-                    val vRes = callGeminiWithFallback(cleanVision, cleanVisionModel, probePayload)
+                    val vRes = probeGeminiKey(cleanVision, cleanVisionModel)
                     vRes.put("configured", true)
                     vRes.put("model", cleanVisionModel)
                     vRes.put("keyTag", keyPrefixTag(cleanVision))
