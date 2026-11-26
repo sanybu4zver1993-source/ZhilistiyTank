@@ -96,7 +96,8 @@ function createDefaultState() {
             conditions: "",
             goal: "maintenance",
             waterNorm: 3000,
-            region: "Чернигов"
+            region: "Чернигов",
+            fullText: ""
         },
         apiKeys: {
             trainerKey: "",
@@ -360,7 +361,8 @@ window.wipeRuntimeSensitiveDom = () => {
     if (window.clearPhotoMemory) window.clearPhotoMemory();
     const fields = [
         "foodName", "foodB", "foodF", "foodU", "foodKcal", "smartFoodInput",
-        "photoContextInput", "photoFoodNameInput", "photoFoodB", "photoFoodF", "photoFoodU", "photoFoodKcal",
+        "photoContextInput", "photoFoodNameInput", "photoFoodB", "photoFoodF", "photoFoodU", "photoFoodKcal", "photoManualNoteInput",
+        "dossierYear", "dossierBlood", "dossierHeight", "dossierWeight", "dossierAllergies", "dossierConditions", "dossierFullText",
         "chatInput", "steganoPassInput", "tankBackupPassInput",
         "oldCurrentPin", "newCurrentPin", "geminiTrainerKey", "geminiVisionKey", "nextDnsHostInput", "alertsInUaToken",
         "customWaterInput", "qrInputText"
@@ -512,9 +514,10 @@ window.saveDossier = () => {
         conditions: document.getElementById("dossierConditions").value,
         goal: document.getElementById("dossierGoal").value,
         waterNorm: Math.max(500, safeParseInt(document.getElementById("dossierWaterNorm").value, 3000)),
-        region: document.getElementById("dossierRegion").value || "Чернигов"
+        region: document.getElementById("dossierRegion").value || "Чернигов",
+        fullText: (document.getElementById("dossierFullText")?.value || "").trim()
     };
-    saveUIState();
+    if (window.flushVaultNow) window.flushVaultNow(); else saveUIState();
     window.syncWaterFromNative(true);
     showToast("Досье сохранено!");
 };
@@ -530,6 +533,8 @@ window.loadDossierUI = () => {
     document.getElementById("dossierGoal").value = d.goal || "maintenance";
     document.getElementById("dossierWaterNorm").value = d.waterNorm || 3000;
     document.getElementById("dossierRegion").value = d.region || "Чернигов";
+    const fullEl = document.getElementById("dossierFullText");
+    if (fullEl) fullEl.value = d.fullText || "";
 };
 
 // --- Water & Native Tile Sync ---
@@ -703,7 +708,8 @@ window.renderDailyStatsLog = () => {
         if (e.type === "water") {
             desc = `💧 Вода: +${Math.round(e.payload?.ml || 0)} мл`;
         } else if (e.type === "food") {
-            desc = `🍗 ${escapeHtml(e.payload?.name || "Еда")} — ${Math.round(e.payload?.Kcal || 0)} ккал (Б:${Math.round(e.payload?.B || 0)} Ж:${Math.round(e.payload?.F || 0)} У:${Math.round(e.payload?.U || 0)})`;
+            const notePart = e.payload?.note ? ` · <i>${escapeHtml(e.payload.note)}</i>` : "";
+            desc = `🍗 ${escapeHtml(e.payload?.name || "Еда")} — ${Math.round(e.payload?.Kcal || 0)} ккал (Б:${Math.round(e.payload?.B || 0)} Ж:${Math.round(e.payload?.F || 0)} У:${Math.round(e.payload?.U || 0)})${notePart}`;
         } else if (e.type === "supp_taken") {
             desc = `💊 ${escapeHtml(e.payload?.label || e.payload?.key || "БАД")}`;
         } else if (e.type === "caffeine") {
@@ -732,10 +738,11 @@ window.renderDailyStatsLog = () => {
 };
 
 // --- Food Totals ---
-window.commitFoodEntry = ({ name, b, f, u, kcal }) => {
+window.commitFoodEntry = ({ name, b, f, u, kcal, note = "" }) => {
     if (!window.assertVaultUnlocked()) return false;
     window.haptic(30);
-    const cleanName = (name || "Еда").trim() || "Еда";
+    const cleanNote = String(note || "").trim();
+    const cleanName = (name || (cleanNote ? cleanNote.slice(0, 60) : "Еда")).trim() || "Еда";
     const pb = Math.max(0, safeParseInt(b, 0));
     const pf = Math.max(0, safeParseInt(f, 0));
     const pu = Math.max(0, safeParseInt(u, 0));
@@ -761,10 +768,11 @@ window.commitFoodEntry = ({ name, b, f, u, kcal }) => {
         f: pf,
         u: pu,
         k: pk,
+        note: cleanNote,
         time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
     });
 
-    window.logEvent("food", { name: cleanName, B: pb, F: pf, U: pu, Kcal: pk });
+    window.logEvent("food", { name: cleanName, B: pb, F: pf, U: pu, Kcal: pk, note: cleanNote });
     window.updateFoodUI();
     saveUIState();
     showToast(`✅ Добавлено: ${cleanName} (+${pk} ккал)`);
@@ -818,7 +826,7 @@ window.updateFoodUI = () => {
         const items = AppState.todayFoodItems || [];
         list.innerHTML = items.length === 0
             ? "<span class='text-muted'>Записей за сегодня пока нет</span>"
-            : items.slice(-10).reverse().map(i => `<div>• [${i.time}] <b>${escapeHtml(i.name)}</b> — ${i.k} ккал (Б:${i.b} Ж:${i.f} У:${i.u})</div>`).join("");
+            : items.slice(-10).reverse().map(i => `<div>• [${i.time}] <b>${escapeHtml(i.name)}</b> — ${i.k} ккал (Б:${i.b} Ж:${i.f} У:${i.u})${i.note ? ` · <i>${escapeHtml(i.note)}</i>` : ""}</div>`).join("");
     }
 };
 
@@ -1232,6 +1240,10 @@ window.exportMedicalReportTxt = () => {
     report += `Група крові: ${d.blood || "—"}\n`;
     report += `Алергії: ${d.allergies || "Не вказано"}\n`;
     report += `Хронічні стани / Травми: ${d.conditions || "Не вказано"}\n\n`;
+    if (d.fullText && d.fullText.trim()) {
+        report += "--- ПОВНЕ ТЕКСТОВЕ ДОСЬЄ ---\n";
+        report += `${d.fullText.trim()}\n\n`;
+    }
 
     report += "--- ПОТОЧНИЙ СТАН (ЦНС / BODY BATTERY) ---\n";
     report += `Оцінка ресурсу: ${AppState.bodyBattery} / 100\n`;
@@ -1267,10 +1279,10 @@ window.verifyDomContract = () => {
         "module-water", "module-sleep", "module-workout", "module-biometrics",
         "module-pharma", "module-chat", "module-stegano", "module-settings", "module-sos",
         "cnsChart", "pvtButton", "suppsContainer", "chatHistory", "chatSendBtn",
-        "btnVoiceFood", "btnVoicePhoto", "btnVoiceChat", "todayWaterLog",
+        "btnVoiceFood", "btnVoicePhoto", "btnVoicePhotoNote", "btnVoiceDossier", "btnVoiceChat", "todayWaterLog",
         "statsDaySelect", "dailyStatsSummary", "dailyStatsTimeline",
         "dashMoodChips", "cnsMoodChips", "hidePrivateDossierFromAi",
-        "photoPreviewImg", "photoResultCard",
+        "photoPreviewImg", "photoResultCard", "photoManualNoteInput", "dossierFullText",
         "trainerModelSelect", "visionModelSelect", "appVersionBadge"
     ];
     const missing = requiredIds.filter(id => !document.getElementById(id));

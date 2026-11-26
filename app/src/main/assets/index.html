@@ -244,6 +244,18 @@
                                 <option value="Львов">Львов</option>
                             </select>
                         </div>
+
+                        <hr class="border-gray" style="margin:6px 0;">
+
+                        <div class="input-group">
+                            <label>📝 Полное текстовое досье (вставить готовый текст)</label>
+                            <p class="text-xs text-muted">Можно вставить большой готовый текст — он шифруется в Vault, объединяется с полями выше и учитывается ИИ-Тренером, Фотографом и в мед-отчёте.</p>
+                            <textarea id="dossierFullText" rows="6" placeholder="Вставь сюда готовое текстовое досье: анамнез, особенности, препараты, цели, режим..." onchange="saveDossier()"></textarea>
+                            <div class="grid-2 gap-2 mt-1">
+                                <button type="button" class="btn btn-outline btn-sm" id="btnVoiceDossier" onclick="startVoiceDossierText()">🎤 Надиктовать</button>
+                                <button type="button" class="btn btn-success btn-sm" onclick="saveDossier()">💾 Сохранить досье</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -339,7 +351,7 @@
                         <div id="photoLocalMlBox" class="card bg-dark text-xs text-muted" style="display:none; padding:8px 10px; border-color:rgba(0,229,255,0.35);"></div>
                     </div>
 
-                    <div id="photoResultCard" class="card flex-col gap-2" style="display:none;">
+                    <div id="photoResultCard" class="card flex-col gap-2 mb-2" style="display:none;">
                         <div class="flex justify-between align-center gap-2">
                             <h3 id="photoFoodTitle" style="margin:0;">Распознанное блюдо</h3>
                             <span id="photoConfidenceBadge" class="badge-pill">—</span>
@@ -351,9 +363,11 @@
                         <div id="photoUncertainBox" class="uncertain-box text-xs" style="display:none;"></div>
 
                         <div id="photoItemsBreakdown" class="flex-col gap-1 text-xs text-muted"></div>
+                    </div>
 
-                        <hr class="border-gray" style="margin:6px 0;">
-                        <p class="text-xs text-muted">Можешь подправить граммовку/масло перед записью в дневник:</p>
+                    <div id="photoManualEntryCard" class="card flex-col gap-2">
+                        <h3 style="margin:0;">✍️ Ручной ввод, текст и голос</h3>
+                        <p class="text-xs text-muted">Можешь сам вбить КБЖУ, подправить данные после фото или надиктовать / дописать текстом дополнительно:</p>
 
                         <div class="grid-2 gap-2">
                             <div class="input-group"><label>Название</label><input type="text" id="photoFoodNameInput" placeholder="Блюдо"></div>
@@ -365,6 +379,15 @@
                             <div class="input-group"><label>Углеводы (г)</label><input type="number" id="photoFoodU" placeholder="0"></div>
                         </div>
 
+                        <div class="input-group">
+                            <label>Дополнительный текст / описание (можно голосом)</label>
+                            <div class="flex gap-2">
+                                <textarea id="photoManualNoteInput" rows="2" placeholder="Напр: съел 2 конфеты, запил чаем, или допиши комментарий к блюду..." style="flex:1;"></textarea>
+                                <button type="button" class="btn btn-primary" style="width:auto; padding:0 14px;" id="btnVoicePhotoNote" onclick="startVoicePhotoManualNote()" title="Голосовой ввод текста">🎤</button>
+                            </div>
+                        </div>
+
+                        <button type="button" class="btn btn-outline btn-sm" id="btnAnalyzePhotoText" onclick="analyzePhotographerTextNote()">🧠 Рассчитать КБЖУ из текста</button>
                         <button class="btn btn-success mt-1" id="btnSavePhotoFood" onclick="savePhotographerFood()">✅ Записать в итог БЖУ</button>
                     </div>
                 </div>

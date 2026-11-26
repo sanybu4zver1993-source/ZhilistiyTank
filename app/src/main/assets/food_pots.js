@@ -226,6 +226,8 @@ const OfflineFoodParser = (() => {
     return { parseMealText };
 })();
 
+window.OfflineFoodParser = OfflineFoodParser;
+
 window.autoParseFood = () => {
     const text = (document.getElementById("smartFoodInput").value || "").trim();
     if (!text) return;
@@ -302,7 +304,7 @@ window.onUnifiedVoiceResult = (resStr) => {
 };
 
 window.initVoiceFoodButton = () => {
-    ["btnVoiceFood", "btnVoicePhoto", "btnVoiceChat"].forEach(id => {
+    ["btnVoiceFood", "btnVoicePhoto", "btnVoicePhotoNote", "btnVoiceDossier", "btnVoiceChat"].forEach(id => {
         const btn = document.getElementById(id);
         if (btn) btn.style.display = "inline-flex";
     });
@@ -322,6 +324,21 @@ window.startVoicePhotoHint = () => {
     launchUnifiedVoiceInput("Надиктуй подсказку к фото (размер, масло, соус)...", {
         inputId: "photoContextInput",
         append: true
+    });
+};
+
+window.startVoicePhotoManualNote = () => {
+    launchUnifiedVoiceInput("Надиктуй что съел или комментарий к блюду...", {
+        inputId: "photoManualNoteInput",
+        append: true
+    });
+};
+
+window.startVoiceDossierText = () => {
+    launchUnifiedVoiceInput("Надиктуй текст для личного досье...", {
+        inputId: "dossierFullText",
+        append: true,
+        onAfter: () => { if (window.saveDossier) window.saveDossier(); }
     });
 };
 
