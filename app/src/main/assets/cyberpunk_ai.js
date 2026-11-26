@@ -24,14 +24,14 @@ function getEffectiveApiKeysSnapshot(allowEmptyFromDom = false) {
     return {
         trainerKey: allowEmptyFromDom ? domTrainerKey : (domTrainerKey || (saved.trainerKey || "").trim()),
         visionKey: allowEmptyFromDom ? domVisionKey : (domVisionKey || (saved.visionKey || "").trim()),
-        trainerModel: domTrainerModel || saved.trainerModel || "gemini-4-hydrogen",
-        visionModel: domVisionModel || saved.visionModel || saved.trainerModel || "gemini-4-hydrogen",
+        trainerModel: domTrainerModel || saved.trainerModel || "gemini-3.8-flash",
+        visionModel: domVisionModel || saved.visionModel || saved.trainerModel || "gemini-3.8-flash",
         trainerModels: Array.isArray(saved.trainerModels) && saved.trainerModels.length
             ? saved.trainerModels
-            : ["gemini-4-hydrogen", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+            : ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"],
         visionModels: Array.isArray(saved.visionModels) && saved.visionModels.length
             ? saved.visionModels
-            : ["gemini-4-hydrogen", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+            : ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"],
         thinkingLevel: domThinking || saved.thinkingLevel || "MEDIUM",
         visionThinkingLevel: domVisionThinking || saved.visionThinkingLevel || "LOW",
         nextDnsHost: allowEmptyFromDom
@@ -66,8 +66,8 @@ window.refreshAiBadgesOnly = () => {
     const k = AppState.apiKeys || {};
     const trainerKeyActive = (k.trainerKey || k.visionKey || "").trim();
     const visionKeyActive = (k.visionKey || k.trainerKey || "").trim();
-    const trainerModel = k.trainerModel || "gemini-4-hydrogen";
-    const visionModel = k.visionModel || trainerModel || "gemini-4-hydrogen";
+    const trainerModel = k.trainerModel || "gemini-3.8-flash";
+    const visionModel = k.visionModel || trainerModel || "gemini-3.8-flash";
     const thinking = k.thinkingLevel || "MEDIUM";
     const visionThinking = k.visionThinkingLevel || "LOW";
 
@@ -178,10 +178,10 @@ function buildDiagnosticHint(status, detail) {
         return "Эта модель недоступна для твоего ключа. Нажми «🔄 Модели» в ⚙️ Настройки и выбери модель из списка.";
     }
     if (status === 429 || low.includes("quota") || low.includes("resource_exhausted")) {
-        return "Упёрся в лимит запросов (429). Подожди минуту или переключи модель/Thinking на LOW.";
+        return "Упёрся в квоту/лимит Google API (429). Подожди минуту или переключи на gemini-3.5-flash-lite / gemini-3.1-flash-lite / gemini-3.8-flash.";
     }
     if (status === 503 || low.includes("high demand") || low.includes("overloaded") || low.includes("unavailable")) {
-        return "Сервер модели временно перегружен (503). Повтори через пару секунд или выбери другую модель (напр. gemini-2.5-flash) в ⚙️ Настройки.";
+        return "Сервер этой модели у Google сейчас перегружен (503). Авто-резерв пробовал переключиться — выбери в ⚙️ Настройки gemini-3.5-flash-lite / gemini-3.8-flash или повтори чуть позже.";
     }
     if (status === 0) {
         return "Проблема соединения или DNS (NextDNS/VPN). Открой ⚙️ Настройки → «🌐 Проверка связи» для точной диагностики.";
@@ -227,8 +227,11 @@ window.AIRouter = {
                 : (AppState.apiKeys?.thinkingLevel || "MEDIUM")
         );
 
-        if (m.includes("gemini-3") || m.includes("gemini-4") || m.includes("hydrogen") || m.includes("carbon") || m.includes("argon")) {
+        if (m.includes("gemini-4") || m.includes("hydrogen") || m.includes("carbon") || m.includes("neon") || m.includes("argon")) {
             base.thinkingConfig = { thinkingLevel: chosenThinking };
+        } else if (m.includes("gemini-3")) {
+            const safeLevel = chosenThinking === "XHIGH" ? "HIGH" : chosenThinking;
+            base.thinkingConfig = { thinkingLevel: safeLevel };
         } else if (m.includes("gemini-2.5")) {
             const budgetMap = { LOW: 512, MEDIUM: 4096, HIGH: 8192, XHIGH: 16384 };
             base.thinkingConfig = { thinkingBudget: budgetMap[chosenThinking] || (role === "vision" ? 1024 : 4096) };
@@ -249,13 +252,78 @@ window.AIRouter = {
         ];
     },
 
+    buildAttemptQueue(keys, role, primaryKey, primaryModel) {
+        const cleanPrimaryModel = String(primaryModel || "gemini-3.8-flash").replace(/^models\//, "").trim();
+        const backupKey = ((role === "vision" ? keys.trainerKey : keys.visionKey) || "").trim();
+        const discovered = role === "vision" ? (keys.visionModels || []) : (keys.trainerModels || []);
+        const stablePool = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"];
+        const modelCandidates = [cleanPrimaryModel];
+        for (const m of [...stablePool, ...discovered]) {
+            const cleanM = String(m || "").replace(/^models\//, "").trim();
+            if (cleanM && !modelCandidates.includes(cleanM)) {
+                modelCandidates.push(cleanM);
+            }
+        }
+
+        const attempts = [{ key: primaryKey, model: cleanPrimaryModel, isFallback: false }];
+        // Add up to 3 fallback models on the primary key
+        let addedModels = 0;
+        for (const m of modelCandidates) {
+            if (m === cleanPrimaryModel) continue;
+            attempts.push({ key: primaryKey, model: m, isFallback: true });
+            if (++addedModels >= 3) break;
+        }
+        // If user provided a second distinct API key (different account/project), include it too
+        if (backupKey && backupKey !== primaryKey) {
+            attempts.push({ key: backupKey, model: cleanPrimaryModel, isFallback: true });
+            if (cleanPrimaryModel !== "gemini-3.5-flash-lite") {
+                attempts.push({ key: backupKey, model: "gemini-3.5-flash-lite", isFallback: true });
+            } else {
+                attempts.push({ key: backupKey, model: "gemini-3.8-flash", isFallback: true });
+            }
+        }
+        return attempts.slice(0, 5);
+    },
+
+    async executeSingleAttempt(key, model, role, contents, options) {
+        const payload = {
+            contents,
+            generationConfig: this.buildGenerationConfig(model, role, options),
+            safetySettings: this.defaultSafetySettings()
+        };
+
+        if (options.systemInstruction) {
+            payload.systemInstruction = { parts: [{ text: options.systemInstruction }] };
+        }
+
+        let res = await nativeCallGemini(key, model, payload);
+
+        // Transparent one-time fallback if model/endpoint rejects thinkingConfig or safetySettings with HTTP 400
+        if (!res.ok && res.status === 400) {
+            let stripped = false;
+            const detailLow = extractHumanGeminiError(res).toLowerCase();
+            if (payload.generationConfig.thinkingConfig && (detailLow.includes("thinking") || !detailLow.includes("safety"))) {
+                delete payload.generationConfig.thinkingConfig;
+                stripped = true;
+            }
+            if (payload.safetySettings && detailLow.includes("safety")) {
+                delete payload.safetySettings;
+                stripped = true;
+            }
+            if (stripped) {
+                res = await nativeCallGemini(key, model, payload);
+            }
+        }
+        return res;
+    },
+
     async callGemini(role, contents, options = {}) {
         if (window.syncApiKeysFromInputs) window.syncApiKeysFromInputs(true);
         const keys = AppState.apiKeys || {};
         const key = ((role === "vision" ? (keys.visionKey || keys.trainerKey) : (keys.trainerKey || keys.visionKey)) || "").trim();
         const model = ((role === "vision"
-            ? (keys.visionModel || keys.trainerModel || "gemini-4-hydrogen")
-            : (keys.trainerModel || keys.visionModel || "gemini-4-hydrogen")) || "").trim();
+            ? (keys.visionModel || keys.trainerModel || "gemini-3.8-flash")
+            : (keys.trainerModel || keys.visionModel || "gemini-3.8-flash")) || "").trim();
 
         if (!key) {
             return {
@@ -277,89 +345,78 @@ window.AIRouter = {
             }
         }
 
-        const payload = {
-            contents,
-            generationConfig: this.buildGenerationConfig(model, role, options),
-            safetySettings: this.defaultSafetySettings()
-        };
-
-        if (options.systemInstruction) {
-            payload.systemInstruction = { parts: [{ text: options.systemInstruction }] };
-        }
-
         const started = Date.now();
-        let res = await nativeCallGemini(key, model, payload);
+        const attempts = this.buildAttemptQueue(keys, role, key, model);
+        const rejectedKeys = new Set();
+        const trace = [];
+        let lastRes = null;
+        let lastModel = model;
 
-        // Transparent one-time fallback if model/endpoint rejects thinkingConfig or safetySettings with HTTP 400
-        if (!res.ok && res.status === 400) {
-            let stripped = false;
-            const detailLow = extractHumanGeminiError(res).toLowerCase();
-            if (payload.generationConfig.thinkingConfig && (detailLow.includes("thinking") || !detailLow.includes("safety"))) {
-                delete payload.generationConfig.thinkingConfig;
-                stripped = true;
-            }
-            if (payload.safetySettings && detailLow.includes("safety")) {
-                delete payload.safetySettings;
-                stripped = true;
-            }
-            if (stripped) {
-                res = await nativeCallGemini(key, model, payload);
-            }
-        }
+        for (const attempt of attempts) {
+            if (rejectedKeys.has(attempt.key)) continue;
+            lastModel = attempt.model;
 
-        if (!res.ok) {
-            const detail = extractHumanGeminiError(res);
-            const hint = buildDiagnosticHint(res.status || 0, detail);
+            const res = await this.executeSingleAttempt(attempt.key, attempt.model, role, contents, options);
+            lastRes = res;
+
+            if (!res.ok) {
+                const st = res.status || 0;
+                trace.push(`${attempt.model}:${st}`);
+                if (st === 401 || st === 403) {
+                    rejectedKeys.add(attempt.key);
+                    continue;
+                }
+                // Try fallback models/backup key on quota, overload, not-found, or transient server errors
+                if (st === 429 || st === 503 || st === 404 || (st >= 500 && st < 600)) {
+                    continue;
+                }
+                break;
+            }
+
+            let data;
+            try {
+                data = JSON.parse(res.body);
+            } catch (_) {
+                trace.push(`${attempt.model}:bad_json`);
+                continue;
+            }
+
+            const blockReason = data?.promptFeedback?.blockReason;
+            const candidate = data?.candidates?.[0];
+            const finishReason = candidate?.finishReason;
+            const parts = candidate?.content?.parts || [];
+            const nonThought = parts.filter(p => typeof p.text === "string" && !p.thought).map(p => p.text).join("\n").trim();
+            const fallbackText = parts.map(p => p.text || "").join("\n").trim();
+            const cleanText = nonThought || fallbackText;
+
+            if (!cleanText) {
+                const reasonTag = blockReason || finishReason || "EMPTY";
+                trace.push(`${attempt.model}:${reasonTag}`);
+                continue;
+            }
+
+            if (cacheKey) {
+                this.cache[cacheKey] = { text: cleanText, ts: Date.now() };
+                this.pruneCache();
+            }
             return {
-                ok: false,
-                status: res.status || 0,
-                source: "error",
-                model,
-                error: `HTTP ${res.status || 0}: ${detail}${hint ? `\n💡 ${hint}` : ""}`
+                ok: true,
+                text: cleanText,
+                source: attempt.isFallback ? `${attempt.model} (авто-резерв)` : attempt.model,
+                elapsedMs: Date.now() - started
             };
         }
 
-        let data;
-        try {
-            data = JSON.parse(res.body);
-        } catch (_) {
-            return {
-                ok: false,
-                status: res.status || 0,
-                source: "error",
-                model,
-                error: "Ответ от сервера не является корректным JSON: " + String(res.body || "").slice(0, 140)
-            };
-        }
-
-        const blockReason = data?.promptFeedback?.blockReason;
-        const candidate = data?.candidates?.[0];
-        const finishReason = candidate?.finishReason;
-        const parts = candidate?.content?.parts || [];
-        const nonThought = parts.filter(p => typeof p.text === "string" && !p.thought).map(p => p.text).join("\n").trim();
-        const fallbackText = parts.map(p => p.text || "").join("\n").trim();
-        const cleanText = nonThought || fallbackText;
-
-        if (!cleanText) {
-            const reasonTag = blockReason || finishReason || "EMPTY";
-            return {
-                ok: false,
-                status: res.status || 200,
-                source: "error",
-                model,
-                error: `Модель вернула пустой ответ (причина: ${reasonTag}). Попробуй переформулировать или сменить Thinking на LOW/MEDIUM.`
-            };
-        }
-
-        if (cacheKey) {
-            this.cache[cacheKey] = { text: cleanText, ts: Date.now() };
-            this.pruneCache();
-        }
+        const detail = extractHumanGeminiError(lastRes || {});
+        const finalStatus = (lastRes && lastRes.status) || 0;
+        const hint = buildDiagnosticHint(finalStatus, detail);
+        const triedNote = trace.length > 1 ? `\nПопытки: ${trace.join(" → ")}` : "";
         return {
-            ok: true,
-            text: cleanText,
-            source: model,
-            elapsedMs: Date.now() - started
+            ok: false,
+            status: finalStatus,
+            source: "error",
+            model: lastModel,
+            error: `HTTP ${finalStatus}: ${detail}${triedNote}${hint ? `\n💡 ${hint}` : ""}`
         };
     }
 };
@@ -1039,7 +1096,7 @@ window.analyzeFoodImageBase64 = async (base64data, mimeType = "image/jpeg", extr
         showToast("⚠️ Ранее ИИ мазал с порцией — перепроверь граммы руками!");
     }
 
-    const activeVisionModel = keys.visionModel || keys.trainerModel || "gemini-4-hydrogen";
+    const activeVisionModel = keys.visionModel || keys.trainerModel || "gemini-3.8-flash";
     const activeVisionThinking = keys.visionThinkingLevel || "LOW";
     setPhotoStatus(`<span class='text-primary'>⏳ Фотограф (${escapeHtml(activeVisionModel)} · ${escapeHtml(activeVisionThinking)}) объединяет скан нейросетей и тарелку...</span>`);
 
@@ -1249,7 +1306,7 @@ window.analyzePhotographerTextNote = async () => {
         btn.innerText = "⏳ Считаю по тексту...";
     }
 
-    const activeModel = keys.visionModel || keys.trainerModel || "gemini-4-hydrogen";
+    const activeModel = keys.visionModel || keys.trainerModel || "gemini-3.8-flash";
     const activeThinking = keys.visionThinkingLevel || "LOW";
     setPhotoStatus(`<span class='text-primary'>⏳ Фотограф (${escapeHtml(activeModel)}) оценивает текст...</span>`);
 
@@ -1433,7 +1490,7 @@ function populateModelSelect(selectId, modelsList, currentVal) {
     if (!sel) return;
     const list = Array.isArray(modelsList) && modelsList.length > 0
         ? modelsList
-        : ["gemini-4-hydrogen", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+        : ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"];
     const chosen = list.includes(currentVal) ? currentVal : (currentVal || list[0]);
     const finalItems = list.includes(chosen) ? list : [chosen, ...list];
 
@@ -1521,7 +1578,7 @@ window.loadModelsForRole = (role, opts = {}) => {
                     ok: true,
                     fallback: true,
                     note: `Показан базовый список (${err.message})`,
-                    models: ["gemini-4-hydrogen", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+                    models: ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"]
                 }));
             });
     }
@@ -1729,8 +1786,8 @@ window.runGlobalNetworkDiagnosticsUI = async () => {
         window.AndroidBridge.runGlobalNetworkDiagnosticsAsync(
             keys.trainerKey || "",
             keys.visionKey || "",
-            keys.trainerModel || "gemini-4-hydrogen",
-            keys.visionModel || keys.trainerModel || "gemini-4-hydrogen",
+            keys.trainerModel || "gemini-3.8-flash",
+            keys.visionModel || keys.trainerModel || "gemini-3.8-flash",
             "onGlobalNetworkDiagnosticsResult"
         );
         return;
@@ -1771,8 +1828,8 @@ window.loadApiKeysUI = () => {
     const privCb = document.getElementById("hidePrivateDossierFromAi");
     if (privCb) privCb.checked = Boolean(AppState.privacy?.hideDossierPrivateFromAi);
 
-    populateModelSelect("trainerModelSelect", k.trainerModels, k.trainerModel || "gemini-4-hydrogen");
-    populateModelSelect("visionModelSelect", k.visionModels, k.visionModel || "gemini-4-hydrogen");
+    populateModelSelect("trainerModelSelect", k.trainerModels, k.trainerModel || "gemini-3.8-flash");
+    populateModelSelect("visionModelSelect", k.visionModels, k.visionModel || "gemini-3.8-flash");
 
     window.refreshAiBadgesOnly();
 };

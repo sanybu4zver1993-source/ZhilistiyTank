@@ -10,6 +10,7 @@ object AirAlertHelper {
 
     private const val REGIONS_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
     private const val ALERTS_COALESCE_MS = 5_000L
+    private const val SIREN_OUTAGE_COOLDOWN_MS = 3L * 60L * 1000L
 
     private data class CityMatcher(
         val cityKey: String,
@@ -72,6 +73,12 @@ object AirAlertHelper {
 
     @Volatile
     private var cachedRegionsAtMs: Long = 0L
+
+    @Volatile
+    private var lastSirenFailedAtMs: Long = 0L
+
+    @Volatile
+    private var lastSirenFailReason: String = ""
 
     private val regionsLock = Any()
 
@@ -326,31 +333,44 @@ object AirAlertHelper {
             lastAlertsInUaBody = null
         }
 
-        // Primary keyless radar with city/district/hromada precision: siren.pp.ua
-        val regionsIndex = getOrFetchSirenRegionsIndex(context)
-        val sirenRes = httpGetEx(
-            urlString = "https://siren.pp.ua/api/v3/alerts",
-            bearerToken = null,
-            connectMs = 8_000,
-            readMs = 10_000
-        )
-        if (sirenRes.ok && isValidSirenAlertsPayload(sirenRes.body)) {
-            return JSONObject()
-                .put("ok", true)
-                .put("source", "siren.pp.ua")
-                .put("via", sirenRes.resolvedVia)
-                .put("regionsIndex", regionsIndex)
-                .put("body", sirenRes.body)
-                .apply {
-                    if (fallbackNote.isNotEmpty()) put("note", fallbackNote)
-                }
-                .toString()
-        }
+        val nowMs = System.currentTimeMillis()
+        val sirenInCooldown = lastSirenFailedAtMs > 0L && (nowMs - lastSirenFailedAtMs) in 0L until SIREN_OUTAGE_COOLDOWN_MS
+        val sirenFailNote: String
+        if (!sirenInCooldown) {
+            // Primary keyless radar with city/district/hromada precision: siren.pp.ua
+            val regionsIndex = getOrFetchSirenRegionsIndex(context)
+            val sirenRes = httpGetEx(
+                urlString = "https://siren.pp.ua/api/v3/alerts",
+                bearerToken = null,
+                connectMs = 8_000,
+                readMs = 10_000
+            )
+            if (sirenRes.ok && isValidSirenAlertsPayload(sirenRes.body)) {
+                lastSirenFailedAtMs = 0L
+                lastSirenFailReason = ""
+                return JSONObject()
+                    .put("ok", true)
+                    .put("source", "siren.pp.ua")
+                    .put("via", sirenRes.resolvedVia)
+                    .put("regionsIndex", regionsIndex)
+                    .put("body", sirenRes.body)
+                    .apply {
+                        if (fallbackNote.isNotEmpty()) put("note", fallbackNote)
+                    }
+                    .toString()
+            }
 
-        val sirenFailNote = if (sirenRes.status > 0) {
-            "siren.pp.ua HTTP ${sirenRes.status}"
+            sirenFailNote = if (sirenRes.status > 0) {
+                "siren.pp.ua HTTP ${sirenRes.status}"
+            } else {
+                "siren.pp.ua: ${sirenRes.error.ifBlank { "недоступен" }}"
+            }
+            if (sirenRes.status == 0 || sirenRes.status >= 500) {
+                lastSirenFailedAtMs = System.currentTimeMillis()
+                lastSirenFailReason = sirenFailNote
+            }
         } else {
-            "siren.pp.ua: ${sirenRes.error.ifBlank { "недоступен" }}"
+            sirenFailNote = lastSirenFailReason.ifBlank { "siren.pp.ua пауза (таймаут)" }
         }
 
         // Automatic fallback radar (oblast precision): ubilling.net.ua

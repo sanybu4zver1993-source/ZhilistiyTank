@@ -846,11 +846,10 @@ class WebAppInterface(
 
             val fallbackList = JSONArray(
                 listOf(
-                    "gemini-4-hydrogen",
-                    "gemini-2.5-pro",
-                    "gemini-2.5-flash",
-                    "gemini-2.5-flash-lite",
-                    "gemini-2.0-flash"
+                    "gemini-3.8-flash",
+                    "gemini-3.5-flash-lite",
+                    "gemini-3.1-flash-lite",
+                    "gemini-4-hydrogen"
                 )
             )
 
@@ -890,16 +889,17 @@ class WebAppInterface(
                     fun modelPriorityScore(id: String): Int {
                         val l = id.lowercase()
                         return when {
-                            l == "gemini-4-hydrogen" -> 0
-                            l.contains("gemini-4") || l.contains("hydrogen") || l.contains("carbon") -> 1
-                            l.contains("gemini-3") -> 2
-                            l == "gemini-2.5-flash" -> 3
-                            l == "gemini-2.5-pro" -> 4
-                            l == "gemini-2.5-flash-lite" -> 5
-                            l.contains("gemini-2.5") -> 6
-                            l.contains("gemini-2.0-flash") -> 7
-                            l.contains("flash") -> 8
-                            l.contains("pro") -> 9
+                            l == "gemini-3.8-flash" -> 0
+                            l == "gemini-3.5-flash-lite" -> 1
+                            l == "gemini-3.1-flash-lite" -> 2
+                            l == "gemini-4-hydrogen" -> 3
+                            l.contains("gemini-4") || l.contains("hydrogen") || l.contains("carbon") || l.contains("neon") -> 4
+                            l.contains("gemini-3.8") -> 5
+                            l.contains("gemini-3.5") -> 6
+                            l.contains("gemini-3.1") -> 7
+                            l.contains("gemini-3") -> 8
+                            l.contains("flash") -> 10
+                            l.contains("pro") -> 11
                             else -> 20
                         }
                     }
@@ -982,7 +982,7 @@ class WebAppInterface(
         val aiStudioUrl = "https://generativelanguage.googleapis.com/v1beta/models/$encodedModel:generateContent"
         val expressV1Url = "https://aiplatform.googleapis.com/v1/publishers/google/models/$encodedModel:generateContent"
         val expressV1BetaUrl = "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/$encodedModel:generateContent"
-        val retryDelaysMs = if (isDiagnosticProbe) longArrayOf(800L) else longArrayOf(1200L, 2600L)
+        val retryDelaysMs = if (isDiagnosticProbe) longArrayOf(700L) else longArrayOf(900L)
 
         // AI Studio now issues AQ.* keys as well, and generativelanguage works on both AIza* and AI Studio AQ.*.
         var studioRes = postGeminiJsonWithRetry(aiStudioUrl, cleanKey, payloadJson, "generativelanguage", retryDelaysMs)
@@ -1031,6 +1031,8 @@ class WebAppInterface(
             if (res.optBoolean("ok", false)) break
             val status = res.optInt("status", 0)
             if (status !in listOf(429, 500, 502, 503, 504)) break
+            val errLower = res.optString("error", "").lowercase()
+            if (status == 429 && errLower.contains("limit: 0")) break
             try {
                 Thread.sleep(delayMs)
             } catch (_: InterruptedException) {
@@ -1065,7 +1067,7 @@ class WebAppInterface(
                 .put("resolvedVia", resp.resolvedVia)
         } else {
             val errMsg = extractGeminiErrorMsg(resp.body).ifBlank { resp.error }
-            Log.w("VeinyTankAI", "Failed on $hostLabel status=${resp.status} via=${resp.resolvedVia}: ${errMsg.take(260)}")
+            Log.w("VeinyTankAI", "Failed on $hostLabel status=${resp.status} via=${resp.resolvedVia}: ${errMsg.take(500)}")
             JSONObject()
                 .put("ok", false)
                 .put("status", resp.status)
@@ -1180,7 +1182,7 @@ class WebAppInterface(
                 out.put("services", services)
 
                 // 4. Live Gemini Key probes
-                val cleanTrainerModel = trainerModelId.trim().ifEmpty { "gemini-4-hydrogen" }.removePrefix("models/")
+                val cleanTrainerModel = trainerModelId.trim().ifEmpty { "gemini-3.8-flash" }.removePrefix("models/")
                 val cleanVisionModel = visionModelId.trim().ifEmpty { cleanTrainerModel }.removePrefix("models/")
                 val cleanTrainer = trainerKey.trim()
                 val cleanVision = visionKey.trim()
