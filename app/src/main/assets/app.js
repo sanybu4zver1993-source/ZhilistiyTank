@@ -1289,6 +1289,11 @@ window.verifyDomContract = () => {
     if (missing.length > 0) {
         console.error("DOM contract missing IDs:", missing);
     }
+    const requiredFns = ["lockToStealth", "saveDossier", "analyzePhotographerTextNote", "runGlobalNetworkDiagnosticsUI"];
+    const missingFns = requiredFns.filter(fn => typeof window[fn] !== "function");
+    if (missingFns.length > 0) {
+        console.error("JS contract missing functions:", missingFns);
+    }
 };
 
 document.addEventListener("DOMContentLoaded", () => {

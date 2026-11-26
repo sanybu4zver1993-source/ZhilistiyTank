@@ -267,6 +267,7 @@ class MainActivity : ComponentActivity() {
                             settings.apply {
                                 javaScriptEnabled = true
                                 domStorageEnabled = true
+                                cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
                                 mediaPlaybackRequiresUserGesture = false
                                 allowFileAccess = false
                                 allowContentAccess = false
