@@ -24,14 +24,14 @@ function getEffectiveApiKeysSnapshot(allowEmptyFromDom = false) {
     return {
         trainerKey: allowEmptyFromDom ? domTrainerKey : (domTrainerKey || (saved.trainerKey || "").trim()),
         visionKey: allowEmptyFromDom ? domVisionKey : (domVisionKey || (saved.visionKey || "").trim()),
-        trainerModel: domTrainerModel || saved.trainerModel || "gemini-3.8-flash",
-        visionModel: domVisionModel || saved.visionModel || saved.trainerModel || "gemini-3.8-flash",
+        trainerModel: domTrainerModel || saved.trainerModel || "gemini-3.6-flash",
+        visionModel: domVisionModel || saved.visionModel || saved.trainerModel || "gemini-3.6-flash",
         trainerModels: Array.isArray(saved.trainerModels) && saved.trainerModels.length
             ? saved.trainerModels
-            : ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"],
+            : ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-26b-a4b-it"],
         visionModels: Array.isArray(saved.visionModels) && saved.visionModels.length
             ? saved.visionModels
-            : ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"],
+            : ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-26b-a4b-it"],
         thinkingLevel: domThinking || saved.thinkingLevel || "MEDIUM",
         visionThinkingLevel: domVisionThinking || saved.visionThinkingLevel || "LOW",
         nextDnsHost: allowEmptyFromDom
@@ -66,8 +66,8 @@ window.refreshAiBadgesOnly = () => {
     const k = AppState.apiKeys || {};
     const trainerKeyActive = (k.trainerKey || k.visionKey || "").trim();
     const visionKeyActive = (k.visionKey || k.trainerKey || "").trim();
-    const trainerModel = k.trainerModel || "gemini-3.8-flash";
-    const visionModel = k.visionModel || trainerModel || "gemini-3.8-flash";
+    const trainerModel = k.trainerModel || "gemini-3.6-flash";
+    const visionModel = k.visionModel || trainerModel || "gemini-3.6-flash";
     const thinking = k.thinkingLevel || "MEDIUM";
     const visionThinking = k.visionThinkingLevel || "LOW";
 
@@ -111,8 +111,8 @@ function nativeCallGemini(apiKey, modelId, payloadObj) {
                 if (settled) return;
                 settled = true;
                 delete window[cbName];
-                resolve({ ok: false, status: 0, error: "Таймаут ответа от Android/сети (105с)" });
-            }, 105000);
+                resolve({ ok: false, status: 0, error: "Таймаут ответа от Android/сети (145с)" });
+            }, 145000);
 
             window[cbName] = (resStr) => {
                 if (settled) return;
@@ -178,10 +178,10 @@ function buildDiagnosticHint(status, detail) {
         return "Эта модель недоступна для твоего ключа. Нажми «🔄 Модели» в ⚙️ Настройки и выбери модель из списка.";
     }
     if (status === 429 || low.includes("quota") || low.includes("resource_exhausted")) {
-        return "Упёрся в квоту/лимит Google API (429). Подожди минуту или переключи на gemini-3.5-flash-lite / gemini-3.1-flash-lite / gemini-3.8-flash.";
+        return "Упёрся в квоту/лимит Google API (429) по всему каскаду. Подожди минуту или добавь второй ключ с другого аккаунта.";
     }
     if (status === 503 || low.includes("high demand") || low.includes("overloaded") || low.includes("unavailable")) {
-        return "Сервер этой модели у Google сейчас перегружен (503). Авто-резерв пробовал переключиться — выбери в ⚙️ Настройки gemini-3.5-flash-lite / gemini-3.8-flash или повтори чуть позже.";
+        return "Серверы Google сейчас перегружены (503) даже по резервным моделям. Повтори запрос через пару секунд.";
     }
     if (status === 0) {
         return "Проблема соединения или DNS (NextDNS/VPN). Открой ⚙️ Настройки → «🌐 Проверка связи» для точной диагностики.";
@@ -191,6 +191,7 @@ function buildDiagnosticHint(status, detail) {
 
 window.AIRouter = {
     cache: {},
+    sessionCooldowns: {},
     CACHE_TTL_MS: 24 * 60 * 60 * 1000,
     CACHE_MAX_ENTRIES: 30,
 
@@ -221,23 +222,27 @@ window.AIRouter = {
             temperature: options.temperature ?? (role === "vision" ? 0.2 : 0.65)
         };
         const m = (modelId || "").toLowerCase();
+        const isGemma = m.includes("gemma");
+        const isGenericLatest = m.includes("-latest");
         const chosenThinking = options.thinkingLevel || (
             role === "vision"
                 ? (AppState.apiKeys?.visionThinkingLevel || "LOW")
                 : (AppState.apiKeys?.thinkingLevel || "MEDIUM")
         );
 
-        if (m.includes("gemini-4") || m.includes("hydrogen") || m.includes("carbon") || m.includes("neon") || m.includes("argon")) {
-            base.thinkingConfig = { thinkingLevel: chosenThinking };
-        } else if (m.includes("gemini-3")) {
-            const safeLevel = chosenThinking === "XHIGH" ? "HIGH" : chosenThinking;
-            base.thinkingConfig = { thinkingLevel: safeLevel };
-        } else if (m.includes("gemini-2.5")) {
-            const budgetMap = { LOW: 512, MEDIUM: 4096, HIGH: 8192, XHIGH: 16384 };
-            base.thinkingConfig = { thinkingBudget: budgetMap[chosenThinking] || (role === "vision" ? 1024 : 4096) };
+        if (!isGemma && !isGenericLatest) {
+            if (m.includes("gemini-4") || m.includes("hydrogen") || m.includes("carbon") || m.includes("neon") || m.includes("argon")) {
+                base.thinkingConfig = { thinkingLevel: chosenThinking };
+            } else if (m.includes("gemini-3")) {
+                const safeLevel = chosenThinking === "XHIGH" ? "HIGH" : chosenThinking;
+                base.thinkingConfig = { thinkingLevel: safeLevel };
+            } else if (m.includes("gemini-2.5")) {
+                const budgetMap = { LOW: 512, MEDIUM: 4096, HIGH: 8192, XHIGH: 16384 };
+                base.thinkingConfig = { thinkingBudget: budgetMap[chosenThinking] || (role === "vision" ? 1024 : 4096) };
+            }
         }
 
-        if (options.json) {
+        if (options.json && !isGemma) {
             base.responseMimeType = "application/json";
         }
         return base;
@@ -252,58 +257,108 @@ window.AIRouter = {
         ];
     },
 
+    markModelCooldown(key, model, status, errText) {
+        const pair = `${key}|${model}`;
+        const low = String(errText || "").toLowerCase();
+        if (status === 429) {
+            const isDaily = low.includes("per day") || low.includes("limit: 0") || low.includes("daily");
+            this.sessionCooldowns[pair] = Date.now() + (isDaily ? 15 * 60 * 1000 : 60 * 1000);
+        } else if (status === 503 || status === 0 || (status >= 500 && status < 600)) {
+            this.sessionCooldowns[pair] = Date.now() + (2 * 60 * 1000);
+        } else if (status === 404) {
+            this.sessionCooldowns[pair] = Date.now() + (30 * 60 * 1000);
+        }
+    },
+
+    isOnCooldown(key, model) {
+        const until = this.sessionCooldowns[`${key}|${model}`] || 0;
+        if (until <= Date.now()) {
+            delete this.sessionCooldowns[`${key}|${model}`];
+            return false;
+        }
+        return true;
+    },
+
     buildAttemptQueue(keys, role, primaryKey, primaryModel) {
-        const cleanPrimaryModel = String(primaryModel || "gemini-3.8-flash").replace(/^models\//, "").trim();
+        const cleanPrimaryModel = String(primaryModel || "gemini-3.6-flash").replace(/^models\//, "").trim();
         const backupKey = ((role === "vision" ? keys.trainerKey : keys.visionKey) || "").trim();
         const discovered = role === "vision" ? (keys.visionModels || []) : (keys.trainerModels || []);
-        const stablePool = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"];
+        // Ordered strongest -> smaller lightweight -> ultra-backup open model
+        const tieredCascade = [
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash-lite",
+            "gemma-4-26b-a4b-it"
+        ];
         const modelCandidates = [cleanPrimaryModel];
-        for (const m of [...stablePool, ...discovered]) {
+        for (const m of [...tieredCascade, ...discovered]) {
             const cleanM = String(m || "").replace(/^models\//, "").trim();
-            if (cleanM && !modelCandidates.includes(cleanM)) {
+            if (!cleanM || /transcribe|nano-banana|tts|embedding|imagen|veo/i.test(cleanM)) continue;
+            if (!modelCandidates.includes(cleanM)) {
                 modelCandidates.push(cleanM);
             }
         }
 
-        const attempts = [{ key: primaryKey, model: cleanPrimaryModel, isFallback: false }];
-        // Add up to 3 fallback models on the primary key
-        let addedModels = 0;
+        const rawAttempts = [];
         for (const m of modelCandidates) {
-            if (m === cleanPrimaryModel) continue;
-            attempts.push({ key: primaryKey, model: m, isFallback: true });
-            if (++addedModels >= 3) break;
+            rawAttempts.push({ key: primaryKey, model: m, isFallback: m !== cleanPrimaryModel });
         }
-        // If user provided a second distinct API key (different account/project), include it too
         if (backupKey && backupKey !== primaryKey) {
-            attempts.push({ key: backupKey, model: cleanPrimaryModel, isFallback: true });
-            if (cleanPrimaryModel !== "gemini-3.5-flash-lite") {
-                attempts.push({ key: backupKey, model: "gemini-3.5-flash-lite", isFallback: true });
-            } else {
-                attempts.push({ key: backupKey, model: "gemini-3.8-flash", isFallback: true });
-            }
+            rawAttempts.push({ key: backupKey, model: "gemini-3.6-flash", isFallback: true });
+            rawAttempts.push({ key: backupKey, model: "gemini-3.5-flash", isFallback: true });
+            rawAttempts.push({ key: backupKey, model: "gemini-3.5-flash-lite", isFallback: true });
         }
-        return attempts.slice(0, 5);
+
+        // Prioritize candidates NOT currently in session cooldown so failing models are skipped instantly
+        const healthy = rawAttempts.filter(a => !this.isOnCooldown(a.key, a.model));
+        const cooled = rawAttempts.filter(a => this.isOnCooldown(a.key, a.model));
+        return [...healthy, ...cooled].slice(0, 10);
     },
 
     async executeSingleAttempt(key, model, role, contents, options) {
-        const payload = {
-            contents,
-            generationConfig: this.buildGenerationConfig(model, role, options),
-            safetySettings: this.defaultSafetySettings()
-        };
+        const isGemma = String(model || "").toLowerCase().includes("gemma");
+        let effectiveContents = contents;
 
-        if (options.systemInstruction) {
-            payload.systemInstruction = { parts: [{ text: options.systemInstruction }] };
+        if (isGemma && options.systemInstruction && Array.isArray(contents) && contents.length > 0) {
+            effectiveContents = contents.map((turn, idx) => {
+                if (idx !== 0 || !Array.isArray(turn?.parts)) return turn;
+                const firstParts = turn.parts.map((p, pIdx) => (
+                    pIdx === 0 && typeof p.text === "string"
+                        ? { ...p, text: `${options.systemInstruction}\n\nЗАПРОС ПОЛЬЗОВАТЕЛЯ:\n${p.text}` }
+                        : p
+                ));
+                return { ...turn, parts: firstParts };
+            });
+        }
+
+        const payload = {
+            contents: effectiveContents,
+            generationConfig: this.buildGenerationConfig(model, role, options)
+        };
+        if (!isGemma) {
+            payload.safetySettings = this.defaultSafetySettings();
+            if (options.systemInstruction) {
+                payload.systemInstruction = { parts: [{ text: options.systemInstruction }] };
+            }
         }
 
         let res = await nativeCallGemini(key, model, payload);
 
-        // Transparent one-time fallback if model/endpoint rejects thinkingConfig or safetySettings with HTTP 400
+        // Transparent one-time fallback if model/endpoint rejects thinkingConfig, responseMimeType, or safetySettings with HTTP 400
         if (!res.ok && res.status === 400) {
             let stripped = false;
             const detailLow = extractHumanGeminiError(res).toLowerCase();
-            if (payload.generationConfig.thinkingConfig && (detailLow.includes("thinking") || !detailLow.includes("safety"))) {
+            if (payload.generationConfig.thinkingConfig && (detailLow.includes("thinking") || (!detailLow.includes("safety") && !detailLow.includes("json")))) {
                 delete payload.generationConfig.thinkingConfig;
+                stripped = true;
+            }
+            if (payload.generationConfig.responseMimeType && (detailLow.includes("json") || detailLow.includes("mime"))) {
+                delete payload.generationConfig.responseMimeType;
                 stripped = true;
             }
             if (payload.safetySettings && detailLow.includes("safety")) {
@@ -322,8 +377,8 @@ window.AIRouter = {
         const keys = AppState.apiKeys || {};
         const key = ((role === "vision" ? (keys.visionKey || keys.trainerKey) : (keys.trainerKey || keys.visionKey)) || "").trim();
         const model = ((role === "vision"
-            ? (keys.visionModel || keys.trainerModel || "gemini-3.8-flash")
-            : (keys.trainerModel || keys.visionModel || "gemini-3.8-flash")) || "").trim();
+            ? (keys.visionModel || keys.trainerModel || "gemini-3.6-flash")
+            : (keys.trainerModel || keys.visionModel || "gemini-3.6-flash")) || "").trim();
 
         if (!key) {
             return {
@@ -361,13 +416,20 @@ window.AIRouter = {
 
             if (!res.ok) {
                 const st = res.status || 0;
+                const errTxt = extractHumanGeminiError(res);
+                const errLow = errTxt.toLowerCase();
                 trace.push(`${attempt.model}:${st}`);
-                if (st === 401 || st === 403) {
+
+                if (st === 401 || (st === 403 && !errLow.includes("aiplatform") && !errLow.includes("agent platform"))) {
                     rejectedKeys.add(attempt.key);
                     continue;
                 }
-                // Try fallback models/backup key on quota, overload, not-found, or transient server errors
-                if (st === 429 || st === 503 || st === 404 || (st >= 500 && st < 600)) {
+                if (st === 0 && errLow.includes("нет активной сети")) {
+                    break;
+                }
+                this.markModelCooldown(attempt.key, attempt.model, st, errTxt);
+                // Try fallback models/backup key on timeout, quota, overload, not-found, or transient server errors
+                if (st === 0 || st === 429 || st === 503 || st === 404 || (st >= 500 && st < 600)) {
                     continue;
                 }
                 break;
@@ -1048,8 +1110,11 @@ function renderLocalMlBox(ml) {
     box.style.display = "block";
 }
 
+let photoAnalysisSeq = 0;
+
 window.analyzeFoodImageBase64 = async (base64data, mimeType = "image/jpeg", extraOpts = {}) => {
     if (!window.assertVaultUnlocked()) return;
+    const mySeq = ++photoAnalysisSeq;
     window.syncApiKeysFromInputs(true);
     const keys = AppState.apiKeys || {};
 
@@ -1074,6 +1139,7 @@ window.analyzeFoodImageBase64 = async (base64data, mimeType = "image/jpeg", extr
 
     // 1. Run local on-device ML models FIRST (works offline & enriches Gemini Vision)
     const localMl = await nativePreAnalyzeFood(base64data);
+    if (mySeq !== photoAnalysisSeq) return;
     renderLocalMlBox(localMl);
 
     // Pre-fill from OpenFoodFacts if barcode matched (useful even offline!)
@@ -1096,7 +1162,7 @@ window.analyzeFoodImageBase64 = async (base64data, mimeType = "image/jpeg", extr
         showToast("⚠️ Ранее ИИ мазал с порцией — перепроверь граммы руками!");
     }
 
-    const activeVisionModel = keys.visionModel || keys.trainerModel || "gemini-3.8-flash";
+    const activeVisionModel = keys.visionModel || keys.trainerModel || "gemini-3.6-flash";
     const activeVisionThinking = keys.visionThinkingLevel || "LOW";
     setPhotoStatus(`<span class='text-primary'>⏳ Фотограф (${escapeHtml(activeVisionModel)} · ${escapeHtml(activeVisionThinking)}) объединяет скан нейросетей и тарелку...</span>`);
 
@@ -1166,6 +1232,7 @@ ${weeklyData}
             [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64data } }] }],
             { temperature: 0.35, json: true, thinkingLevel: activeVisionThinking, noCache: Boolean(extraOpts.noCache) }
         );
+        if (mySeq !== photoAnalysisSeq) return;
 
         if (!res.ok) {
             if (localMl && localMl.ok && localMl.openFoodFacts && Number(localMl.openFoodFacts.kcal100g) >= 0) {
@@ -1306,7 +1373,7 @@ window.analyzePhotographerTextNote = async () => {
         btn.innerText = "⏳ Считаю по тексту...";
     }
 
-    const activeModel = keys.visionModel || keys.trainerModel || "gemini-3.8-flash";
+    const activeModel = keys.visionModel || keys.trainerModel || "gemini-3.6-flash";
     const activeThinking = keys.visionThinkingLevel || "LOW";
     setPhotoStatus(`<span class='text-primary'>⏳ Фотограф (${escapeHtml(activeModel)}) оценивает текст...</span>`);
 
@@ -1490,7 +1557,7 @@ function populateModelSelect(selectId, modelsList, currentVal) {
     if (!sel) return;
     const list = Array.isArray(modelsList) && modelsList.length > 0
         ? modelsList
-        : ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"];
+        : ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-26b-a4b-it"];
     const chosen = list.includes(currentVal) ? currentVal : (currentVal || list[0]);
     const finalItems = list.includes(chosen) ? list : [chosen, ...list];
 
@@ -1570,7 +1637,7 @@ window.loadModelsForRole = (role, opts = {}) => {
                 const models = (data.models || [])
                     .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
                     .map(m => (m.name || "").replace(/^models\//, ""))
-                    .filter(n => n && !/tts|embedding|imagen|veo|robotics|aqa|native-audio|computer-use/i.test(n));
+                    .filter(n => n && !/tts|embedding|imagen|veo|robotics|aqa|native-audio|computer-use|transcribe|nano-banana/i.test(n));
                 window[cbName](JSON.stringify({ ok: true, fallback: false, models }));
             })
             .catch(err => {
@@ -1578,7 +1645,7 @@ window.loadModelsForRole = (role, opts = {}) => {
                     ok: true,
                     fallback: true,
                     note: `Показан базовый список (${err.message})`,
-                    models: ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-hydrogen"]
+                    models: ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-26b-a4b-it"]
                 }));
             });
     }
@@ -1786,8 +1853,8 @@ window.runGlobalNetworkDiagnosticsUI = async () => {
         window.AndroidBridge.runGlobalNetworkDiagnosticsAsync(
             keys.trainerKey || "",
             keys.visionKey || "",
-            keys.trainerModel || "gemini-3.8-flash",
-            keys.visionModel || keys.trainerModel || "gemini-3.8-flash",
+            keys.trainerModel || "gemini-3.6-flash",
+            keys.visionModel || keys.trainerModel || "gemini-3.6-flash",
             "onGlobalNetworkDiagnosticsResult"
         );
         return;
@@ -1828,8 +1895,8 @@ window.loadApiKeysUI = () => {
     const privCb = document.getElementById("hidePrivateDossierFromAi");
     if (privCb) privCb.checked = Boolean(AppState.privacy?.hideDossierPrivateFromAi);
 
-    populateModelSelect("trainerModelSelect", k.trainerModels, k.trainerModel || "gemini-3.8-flash");
-    populateModelSelect("visionModelSelect", k.visionModels, k.visionModel || "gemini-3.8-flash");
+    populateModelSelect("trainerModelSelect", k.trainerModels, k.trainerModel || "gemini-3.6-flash");
+    populateModelSelect("visionModelSelect", k.visionModels, k.visionModel || "gemini-3.6-flash");
 
     window.refreshAiBadgesOnly();
 };

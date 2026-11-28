@@ -846,10 +846,15 @@ class WebAppInterface(
 
             val fallbackList = JSONArray(
                 listOf(
-                    "gemini-3.8-flash",
+                    "gemini-3.6-flash",
+                    "gemini-3.5-flash",
+                    "gemini-3-flash-preview",
+                    "gemini-2.5-flash",
                     "gemini-3.5-flash-lite",
+                    "gemini-flash-lite-latest",
                     "gemini-3.1-flash-lite",
-                    "gemini-4-hydrogen"
+                    "gemini-2.5-flash-lite",
+                    "gemma-4-26b-a4b-it"
                 )
             )
 
@@ -881,7 +886,9 @@ class WebAppInterface(
                             !lower.contains("robotics") &&
                             !lower.contains("aqa") &&
                             !lower.contains("native-audio") &&
-                            !lower.contains("computer-use")
+                            !lower.contains("computer-use") &&
+                            !lower.contains("transcribe") &&
+                            !lower.contains("nano-banana")
                         ) {
                             rawNames.add(name)
                         }
@@ -889,18 +896,27 @@ class WebAppInterface(
                     fun modelPriorityScore(id: String): Int {
                         val l = id.lowercase()
                         return when {
-                            l == "gemini-3.8-flash" -> 0
-                            l == "gemini-3.5-flash-lite" -> 1
-                            l == "gemini-3.1-flash-lite" -> 2
-                            l == "gemini-4-hydrogen" -> 3
-                            l.contains("gemini-4") || l.contains("hydrogen") || l.contains("carbon") || l.contains("neon") -> 4
-                            l.contains("gemini-3.8") -> 5
-                            l.contains("gemini-3.5") -> 6
-                            l.contains("gemini-3.1") -> 7
-                            l.contains("gemini-3") -> 8
-                            l.contains("flash") -> 10
-                            l.contains("pro") -> 11
-                            else -> 20
+                            l == "gemini-3.6-flash" -> 0
+                            l == "gemini-3.5-flash" -> 1
+                            l == "gemini-3-flash-preview" -> 2
+                            l == "gemini-2.5-flash" -> 3
+                            l == "gemini-3.5-flash-lite" -> 4
+                            l == "gemini-flash-lite-latest" -> 5
+                            l == "gemini-3.1-flash-lite" -> 6
+                            l == "gemini-2.5-flash-lite" -> 7
+                            l == "gemma-4-26b-a4b-it" -> 8
+                            l == "gemini-3.7-flash" -> 9
+                            l == "gemini-3.8-flash" -> 10
+                            l == "gemini-4-hydrogen" -> 11
+                            l.contains("gemini-3.6") -> 12
+                            l.contains("gemini-3.5") -> 13
+                            l.contains("gemini-3") -> 14
+                            l.contains("gemini-2.5") -> 15
+                            l.contains("gemma-4") -> 16
+                            l.contains("gemini-4") || l.contains("hydrogen") || l.contains("carbon") || l.contains("neon") || l.contains("argon") -> 17
+                            l.contains("flash") -> 18
+                            l.contains("pro") -> 19
+                            else -> 25
                         }
                     }
                     val sortedNames = rawNames.distinct().sortedWith(compareBy({ modelPriorityScore(it) }, { it }))
@@ -987,8 +1003,8 @@ class WebAppInterface(
         // AI Studio now issues AQ.* keys as well, and generativelanguage works on both AIza* and AI Studio AQ.*.
         var studioRes = postGeminiJsonWithRetry(aiStudioUrl, cleanKey, payloadJson, "generativelanguage", retryDelaysMs)
         val studioStatus = studioRes.optInt("status", 0)
-        // If AI Studio accepted the key (429/500/502/503/504) or key is not AQ.*, return AI Studio result directly.
-        if (studioRes.optBoolean("ok", false) || !isAqKey || studioStatus in listOf(429, 500, 502, 503, 504)) {
+        // Only try Vertex Express for AQ.* keys when AI Studio explicitly rejected the key/route (401/403/404), NOT on timeouts (0) or 429/5xx.
+        if (studioRes.optBoolean("ok", false) || !isAqKey || studioStatus !in listOf(401, 403, 404)) {
             return studioRes
         }
 
@@ -1032,7 +1048,7 @@ class WebAppInterface(
             val status = res.optInt("status", 0)
             if (status !in listOf(429, 500, 502, 503, 504)) break
             val errLower = res.optString("error", "").lowercase()
-            if (status == 429 && errLower.contains("limit: 0")) break
+            if (status == 429 && (errLower.contains("limit: 0") || errLower.contains("per day"))) break
             try {
                 Thread.sleep(delayMs)
             } catch (_: InterruptedException) {
@@ -1055,8 +1071,8 @@ class WebAppInterface(
             urlString = urlString,
             jsonBody = payloadJson,
             headers = headers,
-            connectTimeoutMs = 20_000,
-            readTimeoutMs = 90_000
+            connectTimeoutMs = 12_000,
+            readTimeoutMs = 28_000
         )
         return if (resp.ok) {
             JSONObject()
@@ -1182,7 +1198,7 @@ class WebAppInterface(
                 out.put("services", services)
 
                 // 4. Live Gemini Key probes
-                val cleanTrainerModel = trainerModelId.trim().ifEmpty { "gemini-3.8-flash" }.removePrefix("models/")
+                val cleanTrainerModel = trainerModelId.trim().ifEmpty { "gemini-3.6-flash" }.removePrefix("models/")
                 val cleanVisionModel = visionModelId.trim().ifEmpty { cleanTrainerModel }.removePrefix("models/")
                 val cleanTrainer = trainerKey.trim()
                 val cleanVision = visionKey.trim()
